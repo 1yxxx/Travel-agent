@@ -1,0 +1,88 @@
+# ============================
+# TripAI Docker Compose 编排
+# 启动: docker compose up -d
+# 停止: docker compose down
+# ============================
+
+version: "3.8"
+
+services:
+  # ========== Redis (任务状态缓存) ==========
+  redis:
+    image: redis:7-alpine
+    container_name: tripai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ========== PostgreSQL (结果归档，可选) ==========
+  postgres:
+    image: postgres:16-alpine
+    container_name: tripai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tripai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: tripai123   # ← 生产环境请修改
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tripai"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ========== 后端 API ==========
+  backend:
+    image: tripai:latest
+    build: .
+    container_name: tripai-api
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_URL=postgresql://postgres:tripai123@postgres:5432/tripai
+    volumes:
+      - tripai_data:/app/data
+    working_dir: /app/backend
+    command: uvicorn api_server:app --host 0.0.0.0 --port 8080
+
+  # ========== 前端 Streamlit ==========
+  frontend:
+    image: tripai:latest
+    container_name: tripai-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - API_BASE_URL=http://backend:8080
+    volumes:
+      - tripai_data:/app/data
+    working_dir: /app/frontend
+    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+
+volumes:
+  redis_data:
+  postgres_data:
+  tripai_data:
