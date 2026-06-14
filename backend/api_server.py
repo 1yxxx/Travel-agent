@@ -18,6 +18,7 @@ import asyncio
 import json
 import uuid
 import re
+import threading
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
@@ -25,16 +26,23 @@ from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
-# 添加当前目录到Python路径
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# 支持从项目根目录或 backend/ 目录直接启动。
+_backend_import_dir = Path(__file__).resolve().parent
+_project_import_dir = _backend_import_dir.parent
+for _path in (_backend_import_dir, _project_import_dir):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
-from agents.langgraph_agents import LangGraphTravelAgents
+from supervisor.runtime import SupervisorTravelPlanner
 from agents.simple_travel_agent import SimpleTravelAgent, MockTravelAgent
 from config.langgraph_config import langgraph_config as config
 from storage.persistence import PostgresResultStore, RedisStateStore
+
+# Compatibility alias for legacy helper functions in this module.
+LangGraphTravelAgents = SupervisorTravelPlanner
 
 # 固定项目目录，避免受启动工作目录影响
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -171,7 +179,11 @@ def _analyze_agent_participation(result: Dict[str, Any]) -> Dict[str, Any]:
     failed: List[str] = []
     not_participating: List[str] = []
 
-    for agent in EXPECTED_AGENT_ORDER:
+    expected_agents = result.get("expected_agents", EXPECTED_AGENT_ORDER)
+    if not isinstance(expected_agents, list) or not expected_agents:
+        expected_agents = EXPECTED_AGENT_ORDER
+
+    for agent in expected_agents:
         value = outputs.get(agent)
         if value is None:
             not_participating.append(agent)
@@ -180,7 +192,7 @@ def _analyze_agent_participation(result: Dict[str, Any]) -> Dict[str, Any]:
         participated.append(agent)
         if isinstance(value, dict):
             status = str(value.get("status", "")).strip().lower()
-            if status == "completed":
+            if status in {"completed", "degraded"}:
                 completed.append(agent)
             elif status in {"failed", "error", "timeout"}:
                 failed.append(agent)
@@ -194,10 +206,10 @@ def _analyze_agent_participation(result: Dict[str, Any]) -> Dict[str, Any]:
         else:
             failed.append(agent)
 
-    extra_agents = sorted([name for name in outputs.keys() if name not in EXPECTED_AGENT_ORDER])
+    extra_agents = sorted([name for name in outputs.keys() if name not in expected_agents])
 
     return {
-        "expected_agents": EXPECTED_AGENT_ORDER,
+        "expected_agents": expected_agents,
         "participated_agents": sorted(participated),
         "completed_agents": sorted(completed),
         "failed_agents": sorted(failed),
@@ -225,6 +237,7 @@ app.add_middleware(
 
 # 全局字典，用于缓存当前所有规划任务的实时状态
 planning_tasks: Dict[str, Dict[str, Any]] = {}
+planning_tasks_lock = threading.RLock()
 
 # 任务状态持久化文件路径，重启服务后可恢复未完成/历史任务状态
 TASKS_FILE = "tasks_state.json"
@@ -265,34 +278,35 @@ def append_task_event(
     """
     Append a state event for SSE and Redis stream.
     """
-    task = planning_tasks.get(task_id)
-    if not task:
-        return
+    with planning_tasks_lock:
+        task = planning_tasks.get(task_id)
+        if not task:
+            return
 
-    next_seq = int(task.get("next_event_seq", 1))
-    event_payload: Dict[str, Any] = {
-        "seq": next_seq,
-        "type": event_type,
-        "message": message,
-        "timestamp": datetime.now().isoformat(),
-    }
-    if progress is not None:
-        event_payload["progress"] = int(progress)
-    if agent:
-        event_payload["agent"] = agent
-    if status:
-        event_payload["status"] = status
-    if data is not None:
-        event_payload["data"] = data
+        next_seq = int(task.get("next_event_seq", 1))
+        event_payload: Dict[str, Any] = {
+            "seq": next_seq,
+            "type": event_type,
+            "message": message,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if progress is not None:
+            event_payload["progress"] = int(progress)
+        if agent:
+            event_payload["agent"] = agent
+        if status:
+            event_payload["status"] = status
+        if data is not None:
+            event_payload["data"] = data
 
-    events = task.setdefault("events", [])
-    events.append(event_payload)
-    if len(events) > 1000:
-        task["events"] = events[-1000:]
-    task["next_event_seq"] = next_seq + 1
+        events = task.setdefault("events", [])
+        events.append(event_payload)
+        if len(events) > 1000:
+            task["events"] = events[-1000:]
+        task["next_event_seq"] = next_seq + 1
 
-    REDIS_STATE_STORE.append_event(task_id, event_payload)
-    _sync_task_state_to_redis(task_id)
+        REDIS_STATE_STORE.append_event(task_id, event_payload)
+        _sync_task_state_to_redis(task_id)
 
 
 def save_tasks_state():
@@ -360,7 +374,9 @@ class TravelRequest(BaseModel):
     end_date: str  # 返回日期，格式如“2025-08-17”
     budget_range: str  # 预算范围（如“经济型 (300-800元/天)”）
     group_size: int  # 出行人数
-    interests: list[str] = []  # 兴趣偏好，如["美食","徒步"]
+    interests: list[str] = Field(default_factory=list)  # 兴趣偏好，如["美食","徒步"]
+    departure: str = ""  # 出发城市；提供后才会动态启用航班/铁路 Agent
+    requested_capabilities: list[str] = Field(default_factory=list)  # 可选：限制本次需要的领域能力
     dietary_restrictions: str = ""  # 饮食禁忌或偏好，默认为空
     activity_level: str = "适中"  # 活动强度（如“适中”、“轻松”或“高强度”）
     travel_style: str = "探索者"  # 旅行风格（如“探索者”、“休闲者”）
@@ -415,12 +431,15 @@ async def root():
             "⚡ 实时响应"
         ],
         "agents": [
-            "🎯 协调员智能体",
-            "✈️ 旅行顾问",
-            "💰 预算优化师", 
-            "🌤️ 天气分析师",
-            "🏠 当地专家",
-            "📅 行程规划师"
+            "Supervisor",
+            "Flight Agent",
+            "Train Agent",
+            "Hotel Agent",
+            "Attraction Agent",
+            "Weather Agent",
+            "Local Expert Agent",
+            "Budget Optimizer",
+            "Itinerary Planner"
         ],
         "endpoints": {
             "chat": "/chat - 自然语言交互",
@@ -501,7 +520,10 @@ async def _legacy_run_planning_task(task_id: str, travel_request: Dict[str, Any]
         
         # 转换请求格式
         langgraph_request = {
+            "departure": travel_request.get("departure", ""),
             "destination": travel_request["destination"],
+            "start_date": travel_request.get("start_date", ""),
+            "end_date": travel_request.get("end_date", ""),
             "duration": travel_request.get("duration", 7),
             "budget_range": travel_request["budget_range"],
             "interests": travel_request["interests"],
@@ -701,26 +723,27 @@ async def run_planning_task(task_id: str, travel_request: Dict[str, Any]):
             event_type: str = "task_update",
             data: Optional[Dict[str, Any]] = None,
         ) -> None:
-            task = planning_tasks.get(task_id)
-            if not task:
-                return
-            if status is not None:
-                task["status"] = status
-            if progress is not None:
-                task["progress"] = int(progress)
-            if message is not None:
-                task["message"] = message
-            if agent is not None:
-                task["current_agent"] = agent
-            append_task_event(
-                task_id,
-                event_type,
-                task.get("message", ""),
-                progress=task.get("progress"),
-                status=task.get("status"),
-                agent=task.get("current_agent"),
-                data=data,
-            )
+            with planning_tasks_lock:
+                task = planning_tasks.get(task_id)
+                if not task:
+                    return
+                if status is not None:
+                    task["status"] = status
+                if progress is not None:
+                    task["progress"] = int(progress)
+                if message is not None:
+                    task["message"] = message
+                if agent is not None:
+                    task["current_agent"] = agent
+                append_task_event(
+                    task_id,
+                    event_type,
+                    task.get("message", ""),
+                    progress=task.get("progress"),
+                    status=task.get("status"),
+                    agent=task.get("current_agent"),
+                    data=data,
+                )
 
         update_task_state(
             status="processing",
@@ -731,7 +754,10 @@ async def run_planning_task(task_id: str, travel_request: Dict[str, Any]):
         )
 
         langgraph_request = {
+            "departure": travel_request.get("departure", ""),
             "destination": travel_request["destination"],
+            "start_date": travel_request.get("start_date", ""),
+            "end_date": travel_request.get("end_date", ""),
             "duration": travel_request.get("duration", 7),
             "budget_range": travel_request["budget_range"],
             "interests": travel_request["interests"],
@@ -739,6 +765,8 @@ async def run_planning_task(task_id: str, travel_request: Dict[str, Any]):
             "travel_dates": f"{travel_request['start_date']} 至 {travel_request['end_date']}",
             "transportation_preference": travel_request.get("transportation_preference", "公共交通"),
             "accommodation_preference": travel_request.get("accommodation_preference", "酒店"),
+            "special_requirements": travel_request.get("special_requirements", ""),
+            "requested_capabilities": travel_request.get("requested_capabilities", []),
         }
 
         update_task_state(
@@ -1335,13 +1363,14 @@ async def chat_with_ai(request: ChatRequest, background_tasks: BackgroundTasks):
 你的任务是从用户的自然语言描述中提取旅行规划的关键信息。
 
 请从用户输入中提取以下信息（如果有的话）：
-1. destination: 目的地城市
-2. start_date: 出发日期（格式：YYYY-MM-DD）
-3. end_date: 返回日期（格式：YYYY-MM-DD）
-4. duration: 旅行天数
-5. budget_range: 预算范围（经济型/中等预算/豪华型）
-6. group_size: 人数
-7. interests: 兴趣爱好列表（如：美食、历史、自然风光等）
+1. departure: 出发城市（用户明确提到时提取）
+2. destination: 目的地城市
+3. start_date: 出发日期（格式：YYYY-MM-DD）
+4. end_date: 返回日期（格式：YYYY-MM-DD）
+5. duration: 旅行天数
+6. budget_range: 预算范围（经济型/中等预算/豪华型）
+7. group_size: 人数
+8. interests: 兴趣爱好列表（如：美食、历史、自然风光等）
 
 请返回 JSON 格式，包含：
 - extracted: 提取到的信息字典
@@ -1400,6 +1429,7 @@ async def chat_with_ai(request: ChatRequest, background_tasks: BackgroundTasks):
             try:
                 # 补充默认值
                 travel_data = {
+                    "departure": extracted.get("departure", ""),
                     "destination": extracted.get("destination", ""),
                     "start_date": extracted.get("start_date", (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")),
                     "end_date": extracted.get("end_date", ""),

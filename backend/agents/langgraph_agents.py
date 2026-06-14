@@ -1,90 +1,31 @@
-﻿"""
-LangGraph旅行规划智能体系统
-
-这个模块实现了基于LangGraph框架的多智能体旅行规划系统。
-它使用 OpenAI 兼容的大语言模型，通过多个专业智能体
-的协作来生成全面的旅行计划。
-
-主要组件：
-1. TravelPlanState - 定义智能体间共享的状态结构
-2. LangGraphTravelAgents - 主要的多智能体系统类
-3. 各种专业智能体方法 - 每个智能体负责特定的规划任务
-
-适用于大模型技术初级用户：
-- LangGraph是一个用于构建多智能体系统的框架
-- StateGraph管理智能体间的状态流转
-- 每个智能体都是一个专门的函数，处理特定的任务
-- 智能体通过共享状态进行通信和协作
 """
+LangGraph 旅行规划 Agent —— 多智能体图编排。
 
-from typing import Dict, Any, List, Optional, TypedDict, Annotated, Callable
-import logging
-from pathlib import Path
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
-import json
-from datetime import datetime
+本模块包含 LangGraphTravelAgents 类及其所有图节点方法。
+基础组件（TravelPlanState、工具函数）已拆分至 base.py。
+"""
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
 
-import sys
-import os
-# 添加backend目录到Python路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
 
-from config.langgraph_config import langgraph_config as config
+from .base import (
+    TravelPlanState,
+    agents_logger,
+    config,
+    analysis_agents,
+    required_agents,
+    derive_agent_status,
+    coordinator_decision_from_text,
+)
 
-# --------------------------- 日志配置 ---------------------------
-def setup_agents_logger():
-    logger = logging.getLogger('langgraph_agents')
-    logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        log_dir = Path(__file__).resolve().parents[1] / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_dir / "backend.log", encoding='utf-8')
-        fh.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                                      datefmt='%Y-%m-%d %H:%M:%S')
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-    return logger
-
-agents_logger = setup_agents_logger()
-
-# 定义多智能体系统的状态结构
-class TravelPlanState(TypedDict):
-    """
-    旅行规划状态类
-
-    这个类定义了所有智能体共享的状态结构，包含了
-    旅行规划过程中需要的所有信息。
-
-    属性说明：
-    - messages: 智能体间的消息历史
-    - destination: 目的地
-    - duration: 旅行天数
-    - budget_range: 预算范围
-    - interests: 兴趣爱好列表
-    - group_size: 团队人数
-    - travel_dates: 旅行日期
-    - current_agent: 当前活跃的智能体
-    - agent_outputs: 各智能体的输出结果
-    - final_plan: 最终的旅行计划
-    - iteration_count: 迭代次数
-    """
-    messages: Annotated[List[HumanMessage | AIMessage | SystemMessage], add_messages]
-    destination: str
-    duration: int
-    budget_range: str
-    interests: List[str]
-    group_size: int
-    travel_dates: str
-    current_agent: str
-    agent_outputs: Dict[str, Any]
-    final_plan: Dict[str, Any]
-    iteration_count: int
+from langgraph.checkpoint.sqlite import SqliteSaver
+from pathlib import Path
 
 class LangGraphTravelAgents:
     """
@@ -882,7 +823,9 @@ class LangGraphTravelAgents:
         workflow.add_edge("tools", "coordinator")
 
         # 编译并返回工作流
-        return workflow.compile()
+        checkpointer_path = Path(__file__).resolve().parents[2] / "checkpoints.db"
+        checkpointer = SqliteSaver.from_conn_string(f"sqlite:///{checkpointer_path}")
+        return workflow.compile(checkpointer=checkpointer)
 
     def _coordinator_agent(self, state: TravelPlanState) -> TravelPlanState:
         """
@@ -1933,4 +1876,3 @@ class LangGraphTravelAgents:
                 final_plan["final_plan"] = candidate_texts[0]
 
         return final_plan
-

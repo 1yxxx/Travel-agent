@@ -1,11 +1,12 @@
 # Agent Travel
 
-一个面向旅行规划场景的多 Agent 智能体项目，基于 FastAPI、Streamlit、LangGraph 和 OpenAI 兼容模型接口构建，支持并发分析、任务级流式输出、本地专家 skill/RAG、短期记忆、Redis 状态存储与 PostgreSQL 结果落库。
+一个面向旅行规划场景的 Supervisor 多 Agent 系统，基于 FastAPI、Streamlit 和可选 LangGraph 状态图构建，支持动态任务路由、领域 Agent 并行执行、任务级流式输出、本地专家 skill/RAG、短期记忆、Redis 状态存储与 PostgreSQL 结果落库。
 
 ## 项目亮点
 
-- 共享会话下的并发多 Agent 架构
-- 分析型 Agent 并发执行，整合型 Agent 串行收敛
+- Supervisor 根据请求动态选择领域 Agent
+- 航班、铁路、酒店、景点、天气和本地专家 Agent 并行执行
+- 预算核对、行程整合、Reflection 串行收敛
 - 基于 SSE 的任务级流式输出
 - 本地专家 `skill + RAG` 保留并参与最终规划
 - 短期记忆可落 Redis，最终结果可落 PostgreSQL
@@ -13,17 +14,17 @@
 
 ## 当前架构
 
-`共享会话 + Agent 私有上下文 + 并发分析 + 串行整合 + 协调员终审`
+`Supervisor 状态图 + 动态路由 + Agent 私有上下文 + 并行领域查询 + 串行收敛`
 
 核心流程如下：
 
 1. 用户提交旅行请求
-2. Coordinator 拆分子任务
-3. `travel_advisor / weather_analyst / budget_optimizer / local_expert` 并发执行
-4. Collector 汇总分析结果
+2. Supervisor 解析约束并动态选择所需领域 Agent
+3. `flight/train/hotel/attraction/weather/local_expert` 按需并发执行
+4. Collector 汇总结果并串行执行预算核对
 5. `itinerary_planner` 生成逐日行程
-6. Coordinator 做最终审阅与收口
-7. Final summarizer 输出最终文档
+6. Reflection 检查缺失信息、失败和降级项
+7. Summarizer 输出最终文档
 8. 结果写入本地文件、Redis、PostgreSQL
 
 ## 架构图
@@ -32,41 +33,45 @@
 graph TD
   U["User"] --> FE["Streamlit Frontend"]
   FE --> API["FastAPI Backend"]
-  API --> TASK["Task Runtime"]
+  API --> SUP["Supervisor Runtime"]
 
-  TASK --> COOR1["Coordinator: Task Planning"]
-  COOR1 --> A1["travel_advisor"]
-  COOR1 --> A2["weather_analyst"]
-  COOR1 --> A3["budget_optimizer"]
-  COOR1 --> A4["local_expert (skill + RAG)"]
+  SUP --> INTENT["Intent Parser + Dynamic Router"]
+  INTENT --> FLIGHT["Flight Agent"]
+  INTENT --> TRAIN["Train Agent"]
+  INTENT --> HOTEL["Hotel Agent"]
+  INTENT --> POI["Attraction Agent"]
+  INTENT --> WEATHER["Weather Agent"]
+  INTENT --> LOCAL["Local Expert Agent"]
 
-  A1 --> COL["Collector"]
-  A2 --> COL
-  A3 --> COL
-  A4 --> COL
+  FLIGHT --> COL["Collector"]
+  TRAIN --> COL
+  HOTEL --> COL
+  POI --> COL
+  WEATHER --> COL
+  LOCAL --> COL
 
-  COL --> ITI["itinerary_planner"]
-  ITI --> COOR2["Coordinator: Final Review"]
-  COOR2 --> SUM["Final Summarizer"]
+  COL --> BUDGET["Budget Optimizer"]
+  BUDGET --> ITI["Itinerary Planner"]
+  ITI --> REF["Reflection"]
+  REF --> SUM["Final Summarizer"]
 
-  TASK --> SSE["SSE Event Stream"]
+  SUP --> SSE["SSE Event Stream"]
   SSE --> FE
 
-  TASK --> REDIS["Redis: Task State / Events / Short-term Memory"]
-  TASK --> PG["PostgreSQL: Final Result"]
+  SUP --> REDIS["Redis: Task State / Events / Short-term Memory"]
+  SUP --> PG["PostgreSQL: Final Result"]
 ```
 
 ## 核心模块
 
 ### 1. 多 Agent 规划引擎
 
-后端核心位于 `backend/agents/langgraph_agents.py`，负责：
+后端主编排位于 `backend/supervisor/`，领域 Agent 位于 `backend/agents/domain_agents.py`，负责：
 
-- 构建短期记忆
-- 生成子任务
-- 并发执行分析型 Agent
-- 汇总结果
-- 行程整合与协调员终审
+- 统一 SupervisorState
+- 动态选择与派发领域 Agent
+- Provider 工具调用及失败降级
+- 汇总、预算核对、行程整合和 Reflection
 
 ### 2. API 与事件流
 

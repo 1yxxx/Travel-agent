@@ -543,6 +543,11 @@ def create_travel_form():
         
         with col1:
             st.markdown("#### 📍 基本信息")
+            departure = st.text_input(
+                "出发城市",
+                placeholder="例如: 北京, 上海...",
+                help="填写后系统会按交通偏好启用航班或铁路 Agent"
+            )
             destination = st.text_input(
                 "目的地城市",
                 placeholder="例如: 北京, 上海, 成都...",
@@ -647,6 +652,7 @@ def create_travel_form():
             
             # 构建请求数据
             travel_data = {
+                "departure": departure,
                 "destination": destination,
                 "start_date": start_date.strftime("%Y-%m-%d"),
                 "end_date": end_date.strftime("%Y-%m-%d"),
@@ -833,6 +839,11 @@ def generate_markdown_report(result: Dict[str, Any], task_id: str) -> str:
 
     # 智能体名称映射
     agent_names_cn = {
+        'flight_agent': '✈️ 航班 Agent',
+        'train_agent': '🚄 铁路 Agent',
+        'hotel_agent': '🏨 酒店 Agent',
+        'attraction_agent': '🏛️ 景点 Agent',
+        'weather_agent': '🌤️ 天气 Agent',
         'travel_advisor': '🏛️ 旅行顾问',
         'weather_analyst': '🌤️ 天气分析师',
         'budget_optimizer': '💰 预算优化师',
@@ -1372,6 +1383,11 @@ def display_planning_result(result: Dict[str, Any]):
 
         # 智能体名称映射
         agent_names_cn = {
+            'flight_agent': '✈️ 航班 Agent',
+            'train_agent': '🚄 铁路 Agent',
+            'hotel_agent': '🏨 酒店 Agent',
+            'attraction_agent': '🏛️ 景点 Agent',
+            'weather_agent': '🌤️ 天气 Agent',
             'travel_advisor': '🏛️ 旅行顾问',
             'weather_analyst': '🌤️ 天气分析师',
             'budget_optimizer': '💰 预算优化师',
@@ -1425,7 +1441,8 @@ def main():
         st.markdown("---")
 
         # 基本信息
-        destination = st.text_input("🎯 目的地", placeholder="例如：北京、上海、成都")
+        departure = st.text_input("🛫 出发地", placeholder="例如：北京；填写后启用交通 Agent")
+        destination = st.text_input("🎯 目的地", placeholder="例如：上海、成都、杭州")
 
         # 日期选择
         col1, col2 = st.columns(2)
@@ -1515,15 +1532,16 @@ def main():
             else:
                 # 创建旅行规划请求
                 travel_data = {
+                    "departure": departure,
                     "destination": destination,
                     "start_date": start_date.strftime("%Y-%m-%d"),
                     "end_date": end_date.strftime("%Y-%m-%d"),
                     "group_size": group_size,
                     "budget_range": budget_range,
                     "interests": interests,
-                    "accommodation": accommodation,
-                    "transportation": transportation,
-                    "duration": (end_date - start_date).days,
+                    "accommodation_preference": accommodation,
+                    "transportation_preference": transportation,
+                    "duration": (end_date - start_date).days + 1,
                     "travel_dates": f"{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}"
                 }
 
