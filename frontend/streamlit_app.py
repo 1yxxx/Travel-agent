@@ -23,8 +23,8 @@ from pathlib import Path
 
 # 页面配置
 st.set_page_config(
-    page_title="旅小智 - 您的智能旅行规划助手",
-    page_icon="🤖",
+    page_title="旅小智 · TripAI",
+    page_icon=":material/flight:",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -34,346 +34,80 @@ def inject_custom_css():
     """注入自定义CSS样式"""
     st.markdown("""
     <style>
-    /* 主背景 - 使用浅色渐变 */
-    .stApp {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        background-attachment: fixed;
-    }
-    
-    /* 自然风光背景图层（更淡的透明度） */
-    .stApp::before {
-        content: "";
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background-image: url('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1920');
-        background-size: cover;
-        background-position: center;
-        opacity: 0.08;
-        z-index: 0;
-        pointer-events: none;
-    }
-    
-    /* 主内容区域 */
-    .main .block-container {
-        background: rgba(255, 255, 255, 0.98);
-        border-radius: 20px;
-        padding: 2rem;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-        position: relative;
-        z-index: 1;
-        margin-top: 2rem;
-        margin-bottom: 2rem;
-    }
-    
-    /* 侧边栏样式 - 更浅的背景 */
+    /* Sidebar */
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, rgba(102, 126, 234, 0.55) 0%, rgba(118, 75, 162, 0.55) 100%);
-        backdrop-filter: blur(10px);
+        background: linear-gradient(180deg, #6366f1 0%, #8b5cf6 100%);
     }
-    
-    section[data-testid="stSidebar"] .stMarkdown,
-    section[data-testid="stSidebar"] .stMarkdown p,
-    section[data-testid="stSidebar"] h1,
-    section[data-testid="stSidebar"] h2,
-    section[data-testid="stSidebar"] h3 {
-        color: white !important;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    section[data-testid="stSidebar"] * {
+        color: #ffffff !important;
     }
-    
-    /* 侧边栏标签文字 - 更大字体 */
-    section[data-testid="stSidebar"] label {
-        color: white !important;
-        font-size: 1.3rem !important;
-        font-weight: 700 !important;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-        line-height: 1.6;
-    }
-    
-    /* 侧边栏输入框样式 - 更大字体 */
     section[data-testid="stSidebar"] input,
     section[data-testid="stSidebar"] select {
-        background-color: rgba(255, 255, 255, 0.95) !important;
-        color: #333 !important;
+        color: #1e293b !important;
+        background: rgba(255,255,255,0.95) !important;
         border-radius: 10px;
-        font-size: 1.2rem !important;
-        padding: 0.7rem !important;
-        font-weight: 500;
+        font-size: 1.05rem !important;
+        padding: 0.6rem !important;
     }
-    
-    /* 侧边栏数字输入框 */
-    section[data-testid="stSidebar"] input[type="number"] {
-        font-size: 1.2rem !important;
-    }
-    
-    /* 侧边栏选择框选项 */
-    section[data-testid="stSidebar"] select option {
-        font-size: 1.1rem !important;
-    }
-    
-    /* 侧边栏checkbox标签 */
-    section[data-testid="stSidebar"] .stCheckbox label {
-        font-size: 1.1rem !important;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.15);
-    }
-    
-    /* 侧边栏所有文本 */
-    section[data-testid="stSidebar"] p,
-    section[data-testid="stSidebar"] span,
-    section[data-testid="stSidebar"] div {
-        font-size: 1.1rem !important;
-    }
-    
-    /* 侧边栏help文本 */
-    section[data-testid="stSidebar"] small {
-        font-size: 1rem !important;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-    }
-    
-    /* 侧边栏按钮 - 更大字体 */
     section[data-testid="stSidebar"] .stButton > button {
-        background: white !important;
-        color: #667eea !important;
+        background: #ffffff !important;
+        color: #6366f1 !important;
         font-weight: 700;
-        font-size: 1.3rem !important;
-        padding: 0.9rem 1.8rem !important;
         border-radius: 12px;
-    }
-    
-    section[data-testid="stSidebar"] .stButton > button:hover {
-        background: rgba(255, 255, 255, 0.9) !important;
-        color: #764ba2 !important;
-        transform: translateY(-2px);
-    }
-    
-    /* 标题样式 */
-    h1 {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        font-weight: 800;
-        text-align: center;
-        font-size: 3.5rem !important;
-        margin-bottom: 1rem;
-    }
-    
-    /* 主内容区标题 - 使用深色提高对比度 */
-    .main h2 {
-        color: #2d3748 !important;
-        font-weight: 700;
-    }
-    
-    .main h3 {
-        color: #4a5568 !important;
-        font-weight: 600;
-    }
-    
-    /* Hero区域标题保持渐变色 */
-    .hero-section h1 {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-    }
-    
-    /* 按钮样式 */
-    .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
+        font-size: 1.1rem !important;
+        padding: 0.8rem 1.5rem !important;
         border: none;
-        border-radius: 25px;
-        padding: 0.75rem 2rem;
-        font-weight: 600;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        transition: all 0.2s;
     }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        background: #eef2ff !important;
+        transform: translateY(-1px);
     }
-    
-    /* 卡片样式 */
+
+    /* Hero */
+    .hero-section {
+        text-align: center;
+        padding: 3rem 1rem;
+        border-radius: 16px;
+        margin-bottom: 2rem;
+    }
+    .hero-title {
+        font-size: 2.75rem;
+        font-weight: 800;
+        color: #1e293b;
+    }
+    .hero-subtitle {
+        font-size: 1.2rem;
+        color: #64748b;
+        margin-bottom: 1.5rem;
+    }
+
+    /* Feature cards */
     .feature-card {
         background: white;
-        border-radius: 15px;
+        border-radius: 12px;
         padding: 1.5rem;
-        margin-bottom: 1.5rem;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-        transition: all 0.3s ease;
-        border: 1px solid rgba(102, 126, 234, 0.1);
-        height: 100%;
+        border: 1px solid #e2e8f0;
+        transition: box-shadow 0.2s;
     }
-    
     .feature-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.2);
+        box-shadow: 0 4px 24px rgba(99,102,241,0.12);
     }
-    
-    /* 图片画廊样式 */
-    .gallery-container {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-        gap: 1rem;
-        margin: 2rem 0;
-    }
-    
-    .gallery-item {
-        position: relative;
-        overflow: hidden;
-        border-radius: 15px;
-        height: 200px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        transition: all 0.3s ease;
-    }
-    
-    .gallery-item:hover {
-        transform: scale(1.05);
-        box-shadow: 0 8px 25px rgba(0,0,0,0.2);
-    }
-    
-    .gallery-item img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-    
-    .gallery-caption {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
-        color: white;
-        padding: 1rem;
-        font-weight: 600;
-    }
-    
-    /* 成功/错误消息样式 */
-    .stSuccess {
-        background-color: rgba(40, 167, 69, 0.1);
-        border-left: 4px solid #28a745;
-        border-radius: 8px;
-    }
-    
-    .stError {
-        background-color: rgba(220, 53, 69, 0.1);
-        border-left: 4px solid #dc3545;
-        border-radius: 8px;
-    }
-    
-    /* 进度条样式 */
-    .stProgress > div > div {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    /* 输入框焦点样式 */
-    .stTextInput > div > div > input:focus,
-    .stSelectbox > div > div > select:focus {
-        border-color: #667eea;
-        box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
-    }
-    
-    /* 页脚样式 */
-    .footer {
-        text-align: center;
-        padding: 2rem 0;
-        color: #666;
-        font-size: 0.9rem;
-        margin-top: 3rem;
-        border-top: 1px solid rgba(102, 126, 234, 0.1);
-    }
-    
-    /* 旅小智AI形象样式 - 超大超可爱 */
-    .ai-avatar {
-        font-size: 8rem;
-        text-align: center;
-        margin: 1.5rem 0;
-        animation: float 3s ease-in-out infinite, wobble 4s ease-in-out infinite;
-        filter: drop-shadow(0 6px 12px rgba(102, 126, 234, 0.4));
-        transform-origin: center;
-    }
-    
-    @keyframes float {
-        0%, 100% { transform: translateY(0px) rotate(0deg); }
-        25% { transform: translateY(-15px) rotate(-5deg); }
-        50% { transform: translateY(-20px) rotate(0deg); }
-        75% { transform: translateY(-15px) rotate(5deg); }
-    }
-    
-    @keyframes wobble {
-        0%, 100% { transform: rotate(0deg); }
-        25% { transform: rotate(-3deg); }
-        75% { transform: rotate(3deg); }
-    }
-    
-    /* 侧边栏旅小智logo - 超大超萌 */
-    .sidebar-logo {
-        font-size: 5rem !important;
-        animation: pulse 2s ease-in-out infinite;
-        filter: drop-shadow(0 4px 8px rgba(0,0,0,0.4));
-        display: inline-block;
-    }
-    
-    @keyframes pulse {
-        0%, 100% { transform: scale(1); }
-        50% { transform: scale(1.15); }
-    }
-    
-    /* 自然语言输入框样式 */
+
+    /* Chat input */
     .chat-input-container {
         background: white;
-        border-radius: 20px;
+        border-radius: 16px;
         padding: 1.5rem 2rem;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.1);
-        border: 2px solid rgba(102, 126, 234, 0.2);
+        border: 2px solid #e2e8f0;
         margin: 2rem 0;
-        transition: all 0.3s ease;
+        transition: border-color 0.2s;
     }
-    
     .chat-input-container:hover {
-        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.2);
-        border-color: rgba(102, 126, 234, 0.4);
+        border-color: #6366f1;
     }
-    
-    .chat-input-container input,
-    .chat-input-container textarea {
-        border: none !important;
-        font-size: 1.1rem;
-        line-height: 1.6;
-    }
-    
-    .chat-input-container input:focus,
-    .chat-input-container textarea:focus {
-        outline: none !important;
-        box-shadow: none !important;
-    }
-    
-    /* 增强textarea样式 */
-    .stTextArea textarea {
-        font-size: 1.2rem !important;
-        line-height: 1.8 !important;
-        padding: 1rem !important;
-        border-radius: 15px !important;
-        border: 2px solid rgba(102, 126, 234, 0.3) !important;
-        transition: all 0.3s ease;
-    }
-    
-    .stTextArea textarea:focus {
-        border-color: rgba(102, 126, 234, 0.6) !important;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.15) !important;
-    }
-    
-    .stTextArea textarea::placeholder {
-        color: #999 !important;
-        font-size: 1rem !important;
-        line-height: 1.6 !important;
-    }
-    
-    /* 快捷示例按钮 */
+
+    /* Example chips */
     .example-chips {
         display: flex;
         gap: 0.5rem;
@@ -381,45 +115,57 @@ def inject_custom_css():
         justify-content: center;
         margin: 2rem 0 3rem 0;
     }
-    
     .example-chip {
-        background: rgba(102, 126, 234, 0.1);
-        color: #667eea;
+        background: #eef2ff;
+        color: #6366f1;
         padding: 0.5rem 1rem;
         border-radius: 20px;
         font-size: 0.9rem;
         cursor: pointer;
-        transition: all 0.3s ease;
-        border: 1px solid rgba(102, 126, 234, 0.2);
+        transition: all 0.2s;
+        border: 1px solid #c7d2fe;
     }
-    
     .example-chip:hover {
-        background: rgba(102, 126, 234, 0.2);
-        transform: translateY(-2px);
+        background: #c7d2fe;
+        transform: translateY(-1px);
     }
-    
-    /* Hero区域样式 */
-    .hero-section {
+
+    /* Textarea */
+    .stTextArea textarea {
+        font-size: 1.1rem !important;
+        line-height: 1.7 !important;
+        border-radius: 12px !important;
+    }
+    .stTextArea textarea:focus {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;
+    }
+
+    /* Progress */
+    .stProgress > div > div {
+        background: linear-gradient(90deg, #6366f1, #8b5cf6);
+    }
+
+    /* Footer */
+    .footer {
         text-align: center;
-        padding: 3rem 1rem;
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
-        border-radius: 20px;
-        margin-bottom: 3rem;
-        border: 2px solid rgba(102, 126, 234, 0.2);
+        padding: 2rem 0;
+        color: #94a3b8;
+        font-size: 0.85rem;
+        margin-top: 3rem;
+        border-top: 1px solid #f1f5f9;
     }
-    
-    .hero-title {
-        font-size: 3rem;
-        font-weight: 800;
-        margin-bottom: 1rem;
-        color: #2d3748;
+
+    /* AI avatar */
+    .ai-avatar {
+        font-size: 7rem;
+        text-align: center;
+        margin: 1rem 0;
+        animation: float 3s ease-in-out infinite;
     }
-    
-    .hero-subtitle {
-        font-size: 1.3rem;
-        color: #4a5568;
-        margin-bottom: 2rem;
-        line-height: 1.6;
+    @keyframes float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-12px); }
     }
     </style>
     """, unsafe_allow_html=True)

@@ -58,9 +58,13 @@ class Settings(BaseSettings):
         "",
         description="聚合数据 API Key - 火车订票查询",
     )
-    qweather_api_key: str = Field(
+    qweather_key_id: str = Field(
         "",
-        description="和风天气 API Key（天气预报）",
+        description="和风天气 JWT 凭据 ID",
+    )
+    qweather_private_key: str = Field(
+        "",
+        description="和风天气 Ed25519 私钥 (base64)",
     )
 
     # ======================== 可观测性 ========================
@@ -139,7 +143,7 @@ class Settings(BaseSettings):
     )
 
     class Config:
-        env_file = ".env"
+        env_file = str(Path(__file__).resolve().parents[1] / ".env")
         env_file_encoding = "utf-8"
         extra = "ignore"  # 忽略 .env 中未定义的字段，避免启动报错
 

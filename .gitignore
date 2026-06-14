@@ -51,6 +51,12 @@ chroma_data/
 # Jupyter
 .ipynb_checkpoints/
 
+# 运行产物
+cache_db/
+results/
+chroma_data/
+CODE_AUDIT_REPORT.md
+
 # 临时文件
 tmp/
 temp/

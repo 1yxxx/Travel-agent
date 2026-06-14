@@ -62,7 +62,7 @@ def check_real_apis() -> List[str]:
         ("AMAP_API_KEY", "高德地图 (酒店/景点 POI)", "https://lbs.amap.com → 控制台 → 创建应用 → Web服务"),
         ("JUHE_FLIGHT_KEY", "聚合数据 (航班查询)", "https://www.juhe.cn → 航班订票查询"),
         ("JUHE_TRAIN_KEY", "聚合数据 (火车查询)", "https://www.juhe.cn → 火车订票查询"),
-        ("QWEATHER_API_KEY", "和风天气 (天气预报)", "https://dev.qweather.com → 控制台 → 创建应用"),
+        ("QWEATHER_KEY_ID", "和风天气 JWT (凭据ID)", "https://dev.qweather.com → 控制台 → 凭据管理"),
     ]
     for var, name, guide in apis:
         ok, msg = check_env_var(var)
@@ -197,12 +197,12 @@ def check_weather_mcp() -> List[str]:
         results.append(f"   ⚠️  天气 MCP 客户端导入失败: {e}")
         results.append("      👉 天气将降级到 DuckDuckGo 搜索")
 
-    # 检查 QWeather API (MCP 内部也需要)
-    if os.getenv("QWEATHER_API_KEY", "").strip():
-        results.append("   ✅ QWEATHER_API_KEY 已配置 (MCP 直连可用)")
+    # 检查 QWeather (MCP 内部也需要)
+    if os.getenv("QWEATHER_KEY_ID", "").strip():
+        results.append("   ✅ QWEATHER_KEY_ID 已配置 (JWT 模式)")
     else:
-        results.append("   ⚠️  QWEATHER_API_KEY 未配置")
-        results.append("      👉 MCP 天气服务器将降级到 DuckDuckGo")
+        results.append("   ⚠️  QWEATHER_KEY_ID 未配置")
+        results.append("      👉 MCP 天气服务器将降级到高德天气")
     return results
 
 
@@ -252,7 +252,7 @@ def main() -> None:
     # 统计
     api_ok = all(
         os.getenv(var, "").strip()
-        for var in ["OPENAI_API_KEY", "AMAP_API_KEY", "JUHE_FLIGHT_KEY", "JUHE_TRAIN_KEY", "QWEATHER_API_KEY"]
+        for var in ["OPENAI_API_KEY", "AMAP_API_KEY", "JUHE_FLIGHT_KEY", "JUHE_TRAIN_KEY", "QWEATHER_KEY_ID"]
     )
     core_ok = bool(os.getenv("OPENAI_API_KEY", "").strip())
     full_data_ok = api_ok

@@ -37,7 +37,7 @@ for _path in (_backend_import_dir, _project_import_dir):
         sys.path.insert(0, str(_path))
 
 from supervisor.runtime import SupervisorTravelPlanner
-from agents.simple_travel_agent import SimpleTravelAgent, MockTravelAgent
+from agents.simple_travel_agent import SimpleTravelAgent
 from config.langgraph_config import langgraph_config as config
 from storage.persistence import PostgresResultStore, RedisStateStore
 
@@ -636,73 +636,31 @@ async def _legacy_run_planning_task(task_id: str, travel_request: Dict[str, Any]
                 
         except asyncio.TimeoutError:
             api_logger.warning(f"任务 {task_id}: LangGraph处理超时")
-            # 超时处理，提供简化响应
-            simplified_result = {
-                "success": True,
-                "travel_plan": {
-                    "destination": travel_request["destination"],
-                    "duration": travel_request.get("duration", 7),
-                    "budget_range": travel_request["budget_range"],
-                    "group_size": travel_request["group_size"],
-                    "travel_dates": f"{travel_request['start_date']} 至 {travel_request['end_date']}",
-                    "transportation_preference": travel_request.get("transportation_preference", "公共交通"),
-                    "accommodation_preference": travel_request.get("accommodation_preference", "酒店"),
-                    "summary": f"为{travel_request['destination']}制定的{travel_request.get('duration', 7)}天旅行计划（快速模式）"
-                },
-                "agent_outputs": {
-                    "system_message": {
-                        "response": f"由于系统负载较高，为您提供快速旅行计划。目的地：{travel_request['destination']}，预算：{travel_request['budget_range']}，人数：{travel_request['group_size']}人。建议您关注当地的热门景点、特色美食和文化体验。",
-                        "timestamp": datetime.now().isoformat(),
-                        "status": "completed"
-                    }
-                },
-                "total_iterations": 1,
-                "planning_complete": True
-            }
-            
-            planning_tasks[task_id]["status"] = "completed"
+            planning_tasks[task_id]["status"] = "failed"
             planning_tasks[task_id]["progress"] = 100
-            planning_tasks[task_id]["message"] = "旅行规划完成（快速模式）"
-            planning_tasks[task_id]["result"] = simplified_result
-            
-            # 保存简化结果
-            await save_planning_result(task_id, simplified_result, langgraph_request)
+            planning_tasks[task_id]["message"] = "规划超时，请缩小查询范围后重试"
+            planning_tasks[task_id]["result"] = {
+                "success": False,
+                "error": "LangGraph 执行超时（600秒），请尝试缩小目的地范围或减少旅行天数后重试",
+                "travel_plan": {},
+                "agent_outputs": {},
+                "total_iterations": 0,
+                "planning_complete": False
+            }
                 
         except Exception as agent_error:
-            # 如果AI旅行规划智能体出错，提供一个简化的响应
             api_logger.error(f"任务 {task_id}: AI旅行规划智能体错误: {str(agent_error)}")
-            
-            # 创建一个简化的旅行计划作为回退
-            simplified_result = {
-                "success": True,
-                "travel_plan": {
-                    "destination": travel_request["destination"],
-                    "duration": travel_request.get("duration", 7),
-                    "budget_range": travel_request["budget_range"],
-                    "group_size": travel_request["group_size"],
-                    "travel_dates": f"{travel_request['start_date']} 至 {travel_request['end_date']}",
-                    "transportation_preference": travel_request.get("transportation_preference", "公共交通"),
-                    "accommodation_preference": travel_request.get("accommodation_preference", "酒店"),
-                    "summary": f"为{travel_request['destination']}制定的{travel_request.get('duration', 7)}天旅行计划"
-                },
-                "agent_outputs": {
-                    "system_message": {
-                        "response": f"系统正在维护中，为您提供基础的旅行计划框架。目的地：{travel_request['destination']}，预算：{travel_request['budget_range']}，人数：{travel_request['group_size']}人。建议提前了解当地的交通、住宿和主要景点信息。",
-                        "timestamp": datetime.now().isoformat(),
-                        "status": "completed"
-                    }
-                },
-                "total_iterations": 1,
-                "planning_complete": True
-            }
-            
-            planning_tasks[task_id]["status"] = "completed"
+            planning_tasks[task_id]["status"] = "failed"
             planning_tasks[task_id]["progress"] = 100
-            planning_tasks[task_id]["message"] = "旅行规划完成（简化模式）"
-            planning_tasks[task_id]["result"] = simplified_result
-            
-            # 保存简化结果
-            await save_planning_result(task_id, simplified_result, langgraph_request)
+            planning_tasks[task_id]["message"] = f"规划异常: {str(agent_error)}"
+            planning_tasks[task_id]["result"] = {
+                "success": False,
+                "error": f"智能体执行异常: {str(agent_error)}",
+                "travel_plan": {},
+                "agent_outputs": {},
+                "total_iterations": 0,
+                "planning_complete": False
+            }
             
         api_logger.info(f"任务 {task_id}: 执行完成")
             
@@ -1500,48 +1458,7 @@ async def simple_travel_plan(request: TravelRequest, background_tasks: Backgroun
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建简化规划任务失败: {str(e)}")
 
-@app.post("/mock-plan")
-async def mock_travel_plan(request: TravelRequest):
-    """
-    模拟旅行规划（用于测试，立即返回结果）
 
-    调用 `MockTravelAgent`，快速返回预设的示例行程，主要用于调试前端调用链或演示流程，
-    不依赖外部 API，也不会写入持久化任务状态。
-    """
-    try:
-        # 生成测试任务ID
-        task_id = str(uuid.uuid4())
-        api_logger.info(f"模拟任务 {task_id}: 开始")
-
-        # 计算旅行天数
-        from datetime import datetime
-        start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
-        end_date = datetime.strptime(request.end_date, "%Y-%m-%d")
-        duration = (end_date - start_date).days + 1
-        if duration <= 0:
-            raise HTTPException(status_code=400, detail="结束日期必须晚于或等于开始日期")
-
-        # 转换请求为字典
-        travel_request = request.model_dump()
-        travel_request["duration"] = duration
-
-        # 使用模拟智能体
-        mock_agent = MockTravelAgent()
-        result = mock_agent.run_travel_planning(travel_request)
-
-        api_logger.info(f"模拟任务 {task_id}: 完成")
-
-        return {
-            "task_id": task_id,
-            "status": "completed",
-            "message": "模拟规划完成",
-            "result": result
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"模拟规划失败: {str(e)}")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_ai(request: ChatRequest, background_tasks: BackgroundTasks):

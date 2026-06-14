@@ -7,7 +7,6 @@
 """
 
 import json
-import time
 import sys
 import os
 from datetime import datetime
@@ -177,67 +176,4 @@ class SimpleTravelAgent:
         
         return prompt
 
-class MockTravelAgent:
-    """模拟旅行规划智能体（用于测试）"""
-    
-    def run_travel_planning(self, travel_request: Dict[str, Any]) -> Dict[str, Any]:
-        """运行模拟的旅行规划"""
-        
-        print("开始模拟旅行规划...")
-        
-        # 模拟处理时间
-        time.sleep(2)
-        
-        destination = travel_request.get("destination", "未知目的地")
-        duration = travel_request.get("duration", 3)
-        transportation_preference = travel_request.get("transportation_preference", "公共交通")
-        accommodation_preference = travel_request.get("accommodation_preference", "酒店")
-        
-        mock_plan = f"""
-# {destination}旅行规划
 
-## 行程概览
-- 目的地: {destination}
-- 时长: {duration}天
-- 规划方式: 模拟智能体生成
-
-## 日程安排
-第1天: 抵达{destination}，入住酒店，市区观光
-第2天: 主要景点游览，体验当地文化
-第3天: 自由活动，购物，准备返程
-
-## 预算估算
-- 住宿: ¥200-500/晚
-- 餐饮: ¥100-200/天
-- 交通: ¥50-100/天
-- 门票: ¥100-300/天
-
-## 注意事项
-这是一个模拟生成的旅行规划，仅用于测试目的。
-实际使用时请使用完整的AI规划系统。
-"""
-        
-        result = {
-            "success": True,
-            "travel_plan": {
-                "destination": destination,
-                "duration": duration,
-                "transportation_preference": transportation_preference,
-                "accommodation_preference": accommodation_preference,
-                "planning_method": "模拟智能体",
-                "generated_at": datetime.now().isoformat(),
-                "content": mock_plan
-            },
-            "agent_outputs": {
-                "mock_agent": {
-                    "status": "completed",
-                    "response": mock_plan,
-                    "timestamp": datetime.now().isoformat()
-                }
-            },
-            "total_iterations": 1,
-            "planning_complete": True
-        }
-        
-        print("模拟旅行规划完成")
-        return result

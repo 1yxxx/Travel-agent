@@ -121,37 +121,50 @@ def _get_persist_dir() -> str:
 
 # ======================== Chroma 客户端 ========================
 
+_chroma_client_error: Optional[str] = None
+
+
 @lru_cache(maxsize=1)
-def get_chroma_client() -> chromadb.api.ClientAPI:
+def get_chroma_client() -> Optional[chromadb.api.ClientAPI]:
     """
     获取 Chroma 客户端（单例模式）。
 
     优先使用本地 ChromaDB（PersistentClient），无需任何 API Key。
-    如果配置了 Chroma Cloud（三个环境变量都非空），则切换到 CloudClient。
+    如果配置了 Chroma Cloud，则切换到 CloudClient。
+    初始化失败时返回 None，调用方自动降级。
 
-    @lru_cache(maxsize=1) 的作用：
-    - 第一次调用时创建客户端，后续调用直接返回缓存的客户端
-    - 避免每次查询都重新建立连接
-
-    本地模式特性：
-    - 自动下载 sentence-transformers/all-MiniLM-L6-v2 嵌入模型（首次运行）
-    - 数据持久化到 CHROMA_PERSIST_DIR（默认 ./chroma_data/）
+    @lru_cache(maxsize=1) 缓存客户端，避免重复连接。
     """
+    global _chroma_client_error
+
+    if _chroma_client_error:
+        return None
+
     # 优先使用 Chroma Cloud
     if _is_chroma_cloud_configured():
-        api_key = os.getenv("CHROMA_API_KEY", "").strip()
-        tenant = os.getenv("CHROMA_TENANT", "").strip()
-        database = os.getenv("CHROMA_DATABASE", "").strip()
-        logger.info("使用 Chroma Cloud 模式: tenant=%s, database=%s", tenant, database)
-        return chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
+        try:
+            api_key = os.getenv("CHROMA_API_KEY", "").strip()
+            tenant = os.getenv("CHROMA_TENANT", "").strip()
+            database = os.getenv("CHROMA_DATABASE", "").strip()
+            logger.info("使用 Chroma Cloud 模式: tenant=%s, database=%s", tenant, database)
+            return chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
+        except Exception as e:
+            _chroma_client_error = str(e)
+            logger.warning("Chroma Cloud 连接失败: %s，RAG 将降级", e)
+            return None
 
     # 默认使用本地 ChromaDB
-    persist_dir = _get_persist_dir()
-    logger.info("使用本地 ChromaDB 模式: persist_dir=%s", persist_dir)
-    return chromadb.PersistentClient(
-        path=persist_dir,
-        settings=ChromaSettings(anonymized_telemetry=False),
-    )
+    try:
+        persist_dir = _get_persist_dir()
+        logger.info("使用本地 ChromaDB 模式: persist_dir=%s", persist_dir)
+        return chromadb.PersistentClient(
+            path=persist_dir,
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+    except Exception as e:
+        _chroma_client_error = str(e)
+        logger.warning("本地 ChromaDB 初始化失败: %s，RAG 将降级到搜索", e)
+        return None
 
 
 # ======================== 查询结果处理 ========================

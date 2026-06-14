@@ -8,47 +8,69 @@
 
 ### 前置要求
 
-| 组件 | 版本要求 | 检查命令 |
-|------|---------|---------|
-| Python | 3.10+ | `python --version` |
-| pip | 最新版 | `pip install --upgrade pip` |
-| Redis | 可选（推荐） | `redis-server` |
-| PostgreSQL | 可选 | 无则回退本地文件 |
+| 组件 | 要求 | 检查命令 |
+|------|------|---------|
+| Python | 3.10+ | `py --version` (Windows) / `python3 --version` |
+| pip | 最新版 | `py -m pip install --upgrade pip` |
+| Redis | 可选 | `redis-server`（无则回退内存存储） |
+| PostgreSQL | 可选 | 无则回退本地 JSON 文件 |
 
-### 1. 安装 Python 依赖
+### 1. 克隆项目
 
 ```bash
+git clone <你的仓库地址> TripAI
 cd TripAI
+```
+
+### 2. 创建虚拟环境
+
+```bash
+# Windows
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+
+# macOS / Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+> 如果 Windows 报执行策略错误：
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+> ```
+
+激活后终端前会显示 `(venv)`，表示虚拟环境已激活。
+
+### 3. 安装依赖
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. 配置 API Key
+> 下载慢？换清华镜像：
+> ```bash
+> pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+> ```
+
+### 4. 配置 API Key
+
+编辑项目根目录下的 `.env` 文件：
 
 ```bash
-# 从模板创建 .env
-cp .env.deepseek .env
+# 必填
+OPENAI_API_KEY=sk-your-deepseek-key     # https://platform.deepseek.com
 
-# 编辑 .env，填入 Key
+# 推荐填入（零降级运行）
+AMAP_API_KEY=xxxxxxxx                   # https://lbs.amap.com → Web服务
+JUHE_FLIGHT_KEY=xxxxxxxx                # https://www.juhe.cn → 航班订票查询
+JUHE_TRAIN_KEY=xxxxxxxx                 # https://www.juhe.cn → 火车订票查询
+QWEATHER_KEY_ID=xxxxxxxx                # https://dev.qweather.com → JWT 凭据 ID
+QWEATHER_PRIVATE_KEY=xxxxxxxx           # 和风天气 Ed25519 私钥 (base64)
 ```
 
-**必填**：
+> 💡 只需 DeepSeek Key 就能跑通，其他 Key 缺失时自动降级到搜索或高德天气。
 
-| 变量 | 获取地址 |
-|------|---------|
-| `OPENAI_API_KEY` | https://platform.deepseek.com → API Keys |
-
-**推荐填入（零降级运行）**：
-
-| 变量 | 获取地址 | 用途 |
-|------|---------|------|
-| `AMAP_API_KEY` | https://lbs.amap.com → Web服务 | 酒店/景点 POI |
-| `JUHE_FLIGHT_KEY` | https://www.juhe.cn → 航班订票查询 | 航班查询 |
-| `JUHE_TRAIN_KEY` | https://www.juhe.cn → 火车订票查询 | 高铁查询 |
-| `QWEATHER_API_KEY` | https://dev.qweather.com → 控制台 | 天气预报 |
-
-> 💡 只需 DeepSeek Key 就能跑通，其他 Key 缺失时自动降级到搜索模式。
-
-### 3. 导入本地知识库（首次运行）
+### 5. 导入本地知识库（首次运行）
 
 ```bash
 python backend/scripts/ingest_local_knowledge_to_chroma.py
@@ -56,7 +78,7 @@ python backend/scripts/ingest_local_knowledge_to_chroma.py
 
 首次运行会自动下载 `all-MiniLM-L6-v2` 嵌入模型（约 80MB）。数据存储在 `chroma_data/` 目录。
 
-### 4. 启动 Redis（可选）
+### 6. 启动 Redis（可选）
 
 ```bash
 # Windows
@@ -69,7 +91,7 @@ brew services start redis
 sudo systemctl start redis
 ```
 
-### 5. 环境校验
+### 7. 环境校验
 
 ```bash
 python scripts/validate_env.py
@@ -77,7 +99,9 @@ python scripts/validate_env.py
 
 期望输出全部 ✅。
 
-### 6. 启动服务
+### 8. 启动服务
+
+需要**两个终端**，都要先激活虚拟环境：
 
 ```bash
 # 终端 1 — 后端 API（端口 8080）
@@ -89,19 +113,17 @@ cd frontend
 streamlit run streamlit_app.py --server.port 8501
 ```
 
-### 7. 使用
+### 9. 使用
 
 浏览器打开 **http://localhost:8501**，输入旅行需求：
 
-> "我计划 8 月 1 日从北京去成都玩 4 天，两个人，预算 5000 元，喜欢美食和自然风光"
+> "从北京出发去成都玩 4 天，8月1日出发，两个人，预算 5000 元，喜欢美食和自然风光"
 
 ---
 
-## 二、云服务器部署
+## 二、云服务器部署（Ubuntu 20.04+）
 
-> 目标环境：Ubuntu 20.04+ | 至少 2 核 4G 内存
-
-### 方式 A：Docker Compose 一键部署（推荐）
+### 方式 A：Docker Compose（推荐）
 
 #### 1. 安装 Docker
 
@@ -118,7 +140,7 @@ sudo apt install docker-compose-plugin -y
 git clone <你的仓库> TripAI
 cd TripAI
 
-# 编辑 .env
+# 编辑 .env 填入真实 Key
 vim .env
 ```
 
@@ -137,12 +159,14 @@ docker compose up -d
 | Redis | 6379 | 任务状态缓存 |
 | PostgreSQL | 5432 | 结果归档 |
 
-#### 4. 配置 Nginx 反代（可选，推荐）
+#### 4. Nginx 反代（推荐）
 
 ```bash
 sudo apt install nginx -y
 sudo cp nginx.conf /etc/nginx/sites-available/tripai
 sudo ln -s /etc/nginx/sites-available/tripai /etc/nginx/sites-enabled/
+# 编辑 nginx.conf 中的 server_name
+sudo vim /etc/nginx/sites-available/tripai
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -167,7 +191,7 @@ docker compose up -d --build    # 重新构建并启动
 
 ### 方式 B：裸机部署（systemd）
 
-#### 1. 系统环境
+#### 1. 安装系统依赖
 
 ```bash
 sudo apt update && sudo apt upgrade -y
@@ -185,16 +209,21 @@ cd ~
 git clone <你的仓库> TripAI
 cd TripAI
 
+# 创建虚拟环境
 python3 -m venv venv
 source venv/bin/activate
+
+# 安装依赖
 pip install -r requirements.txt
 
-# 配置
-cp .env.deepseek .env
+# 配置 API Key
 vim .env
 
 # 导入知识库
 python backend/scripts/ingest_local_knowledge_to_chroma.py
+
+# 环境校验
+python scripts/validate_env.py
 ```
 
 #### 3. 创建 systemd 服务
@@ -241,6 +270,10 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable tripai-api tripai-frontend
 sudo systemctl start tripai-api tripai-frontend
+
+# 查看状态
+sudo systemctl status tripai-api
+sudo systemctl status tripai-frontend
 ```
 
 #### 4. Nginx 反代 & 防火墙
@@ -256,13 +289,44 @@ curl http://localhost:8501
 
 ---
 
-## 降级说明
+## 三、常用命令速查
+
+```bash
+# 激活虚拟环境
+# Windows:  .\venv\Scripts\Activate.ps1
+# macOS/Linux: source venv/bin/activate
+
+# 退出虚拟环境
+deactivate
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 环境校验
+python scripts/validate_env.py
+
+# 导入知识库
+python backend/scripts/ingest_local_knowledge_to_chroma.py
+
+# 启动后端
+cd backend && python api_server.py
+
+# 启动前端
+cd frontend && streamlit run streamlit_app.py --server.port 8501
+
+# 运行单元测试
+python -m backend.tests.test_supervisor_runtime
+```
+
+## 四、数据源降级说明
 
 | Key 缺失 | 效果 |
 |----------|------|
 | DeepSeek | ❌ 系统不可用 |
 | 高德地图 | ⚠️ 酒店/景点降级到搜索 |
-| 聚合数据 | ⚠️ 航班/高铁降级到搜索 |
-| 和风天气 | ⚠️ 天气降级到搜索 |
+| 聚合数据-航班 | ⚠️ 航班降级到搜索 |
+| 聚合数据-火车 | ⚠️ 高铁降级到搜索 |
+| 和风天气 | ⚠️ 天气降级到高德天气 |
 | Redis | ⚠️ 任务状态存内存（重启丢失） |
 | PostgreSQL | ⚠️ 结果存本地 JSON 文件 |
+| ChromaDB | ⚠️ 在地建议降级到搜索 |

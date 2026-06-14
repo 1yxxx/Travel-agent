@@ -189,12 +189,14 @@ def _build_local_advice(destination: str, route: str, texts: List[str], source_t
         while len(picked[section]) < 2 and fallback_queue:
             picked[section].append(fallback_queue.pop(0))
 
-    # 如果所有类别都没有数据，生成通用默认建议
+    # 如果所有类别都没有数据，说明搜索/RAG 均未返回有效结果
     if not any(picked.values()):
-        picked["小众地点"] = [f"优先围绕{destination}核心片区做同区聚合游览，减少跨城折返。"]
-        picked["文化礼仪"] = [f"在{destination}出行建议错峰、保持安静排队并优先使用移动支付。"]
-        picked["本地餐饮"] = [f"优先选择评分稳定且交通便捷的在地餐厅，避免一次排太多热门店。"]
-        picked["避坑建议"] = [f"将热门景点安排在工作日白天，提前预约并预留天气变化缓冲。"]
+        return (
+            f"## {destination} 本地建议\n\n"
+            f"> ⚠️ 当前检索未返回 {destination} 的有效本地知识数据。\n"
+            f"> 建议：前往携程/马蜂窝/小红书搜索 \"{destination} 旅游攻略\" 获取第一手在地建议。\n"
+            f"> 数据路径：{route}（检索命中 0 条）"
+        )
 
     # 组装 Markdown 输出
     lines = [

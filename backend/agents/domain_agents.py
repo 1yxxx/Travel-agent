@@ -230,7 +230,7 @@ class BaseDomainAgent:
         """
         工具不可用时的降级输出。
 
-        默认生成一段说明性文本，告知用户该维度信息暂不可用。
+        返回明确的错误说明，不生成任何虚假数据。
         子类可重写以实现领域特定的降级逻辑（如 LocalExpertAgent 的本地文件回退）。
 
         Args:
@@ -240,11 +240,12 @@ class BaseDomainAgent:
         Returns:
             Markdown 格式的降级说明文本
         """
+        destination = facts.get('destination', '未指定')
         return (
-            f"## {self.name} 降级结果\n"
-            f"- 目的地：{facts.get('destination', '未指定')}\n"
-            f"- 当前数据源不可用：{reason}\n"
-            "- 建议在出发前通过官方渠道复核实时信息。"
+            f"## {self.name} 数据暂不可用\n"
+            f"- 目的地：{destination}\n"
+            f"- 原因：{reason}\n"
+            f"- 请通过携程/12306/航空公司官网等渠道查询实时数据。"
         )
 
     # ======================== 内部辅助方法 ========================

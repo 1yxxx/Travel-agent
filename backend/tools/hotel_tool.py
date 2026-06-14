@@ -1,12 +1,11 @@
 """
-酒店搜索工具 —— 封装高德 POI + Mock 价格。
+酒店搜索工具 —— 封装高德 POI 真实数据。
 """
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from core.logging import logger
 from core.config import settings
 from apis.providers.amap import AmapHotelProvider
-from apis.providers.mock_price import MockPriceProvider
 from backend.tools.result import ToolResult
 
 
@@ -21,7 +20,8 @@ class HotelSearchInput(BaseModel):
 @tool(args_schema=HotelSearchInput)
 def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> ToolResult:
     """
-    搜索国内酒店。输入城市、日期和星级偏好，返回酒店列表（含参考价格）。
+    搜索国内酒店。输入城市、日期和星级偏好，返回酒店列表（高德地图真实数据）。
+    注意：高德 API 不提供实时房价，价格需用户在携程/飞猪等平台另行查询。
     """
     if not settings.amap_api_key:
         return ToolResult.degraded(
@@ -31,7 +31,6 @@ def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> To
         )
 
     amap = AmapHotelProvider(settings.amap_api_key)
-    price_mock = MockPriceProvider()
 
     try:
         hotels = amap.search({"city": city, "star": star})
@@ -50,16 +49,12 @@ def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> To
             source="amap",
         )
 
-    prices = price_mock.search({"city": city, "star": star})
-
     lines = [f"**{city} 酒店推荐 ({check_in} → {check_out})**"]
     for h in hotels[:5]:
-        p = prices[0] if prices else {"price_per_night": "N/A"}
         lines.append(
             f"- {h['name']} | "
             f"评分 {h.get('rating', 'N/A')} | "
-            f"参考价 ¥{p.get('price_per_night', 'N/A')}/晚 | "
             f"{h.get('address', '')[:20]}"
         )
-    lines.append(f"\n*价格标注为参考价，实际以携程/飞猪为准*")
+    lines.append(f"\n> ⚠️ 高德地图不提供实时房价，请前往携程/飞猪等平台查询实际价格。")
     return ToolResult.success("\n".join(lines), data=hotels[:5], source="amap")
