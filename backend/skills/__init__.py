@@ -1,2 +1,6 @@
-"""Skill packages for agent capabilities."""
+"""
+技能层 —— 可复用的领域能力包。
 
+包含：
+- local_expert：本地专家技能（RAG + 搜索 + 降级三级策略）
+"""

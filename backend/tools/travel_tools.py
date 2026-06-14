@@ -103,17 +103,33 @@ def _ddg_text_search(query: str, max_results: int, region: str, safesearch: str)
 
 
 def _split_sentences_for_advice(text: str) -> List[str]:
+    """
+    将一段文本拆分为独立的句子，用于构建旅行建议。
+
+    处理步骤：
+    1. 合并多余空白字符
+    2. 按中文标点（。！？；）和换行符拆分
+    3. 过滤掉太短的片段（< 8 个字符，通常是噪音）
+    4. 去重（避免重复建议）
+
+    参数：
+        text: 原始文本（可能是搜索结果或知识片段）
+
+    返回：
+        去重后的句子列表
+    """
     clean = re.sub(r"\s+", " ", (text or "").strip())
     if not clean:
         return []
+    # 按中文句号、感叹号、问号、分号以及换行符拆分
     parts = re.split(r"[。！？!?；;]\s*|\n+", clean)
     results: List[str] = []
     seen = set()
     for part in parts:
         item = part.strip(" -•\t")
-        if len(item) < 8:
+        if len(item) < 8:   # 太短的片段可能是噪音
             continue
-        if item in seen:
+        if item in seen:     # 已出现过，跳过
             continue
         seen.add(item)
         results.append(item)
@@ -121,6 +137,27 @@ def _split_sentences_for_advice(text: str) -> List[str]:
 
 
 def _build_local_advice(destination: str, route: str, texts: List[str], source_tags: List[str]) -> str:
+    """
+    将检索到的文本片段合成为结构化的本地旅行建议。
+
+    按 4 个类别整理：
+    1. 小众地点：古城、街区、公园、博物馆等
+    2. 文化礼仪：习俗、地铁礼仪、支付方式等
+    3. 本地餐饮：美食、餐厅、小吃、夜市等
+    4. 避坑建议：预约、高峰、交通、门票等
+
+    每个类别最多提取 2 条建议，不足时用通用模板补充。
+
+    参数：
+        destination: 目的地城市名
+        route:       检索路径（rag/search/search_fallback）
+        texts:       检索到的文本列表
+        source_tags: 来源标签列表
+
+    返回：
+        Markdown 格式的结构化建议文本
+    """
+    # 类别定义：类别名 → 匹配关键词
     categories = {
         "小众地点": ["景点", "古城", "街区", "公园", "步行", "海边", "博物馆", "书店", "艺术", "打卡"],
         "文化礼仪": ["礼仪", "习俗", "地铁", "排队", "支付", "文明", "沟通", "禁烟", "安静"],
@@ -128,10 +165,12 @@ def _build_local_advice(destination: str, route: str, texts: List[str], source_t
         "避坑建议": ["避坑", "注意", "预约", "高峰", "拥堵", "排队", "交通", "门票", "打车", "雨季", "防晒"],
     }
 
+    # 将所有文本拆分为独立句子
     sentence_pool: List[str] = []
     for text in texts:
         sentence_pool.extend(_split_sentences_for_advice(text))
 
+    # 按关键词匹配将句子归入对应类别
     picked: Dict[str, List[str]] = {key: [] for key in categories}
     used = set()
     for section, keywords in categories.items():
@@ -141,20 +180,23 @@ def _build_local_advice(destination: str, route: str, texts: List[str], source_t
             if any(word in sentence for word in keywords):
                 picked[section].append(sentence)
                 used.add(sentence)
-            if len(picked[section]) >= 2:
+            if len(picked[section]) >= 2:  # 每个类别最多 2 条
                 break
 
+    # 如果某个类别不足 2 条，用未分类的句子补充
     fallback_queue = [s for s in sentence_pool if s not in used]
     for section in categories:
         while len(picked[section]) < 2 and fallback_queue:
             picked[section].append(fallback_queue.pop(0))
 
+    # 如果所有类别都没有数据，生成通用默认建议
     if not any(picked.values()):
         picked["小众地点"] = [f"优先围绕{destination}核心片区做同区聚合游览，减少跨城折返。"]
         picked["文化礼仪"] = [f"在{destination}出行建议错峰、保持安静排队并优先使用移动支付。"]
         picked["本地餐饮"] = [f"优先选择评分稳定且交通便捷的在地餐厅，避免一次排太多热门店。"]
         picked["避坑建议"] = [f"将热门景点安排在工作日白天，提前预约并预留天气变化缓冲。"]
 
+    # 组装 Markdown 输出
     lines = [
         f"{destination} 本地建议（local_advice，可直接用于旅行规划整合）",
         f"skill_route: {route}",
@@ -177,6 +219,17 @@ def _build_local_advice(destination: str, route: str, texts: List[str], source_t
 
 
 def _skill_rag_retriever(destination: str, query_text: str, top_k: int) -> tuple[List[str], List[str], int]:
+    """
+    LocalExpertSkill 的 RAG 检索器适配函数。
+
+    调用 Chroma 本地知识库进行向量检索，
+    返回 (文本列表, 来源标签列表, 命中数量)。
+
+    参数：
+        destination: 城市名（用于 city 过滤）
+        query_text:  查询文本
+        top_k:       返回数量
+    """
     hits = query_local_knowledge(destination=destination, query=query_text, top_k=top_k)
     texts = [(hit.get("document") or "").strip() for hit in hits if hit.get("document")]
     source_tags: List[str] = []
@@ -189,11 +242,20 @@ def _skill_rag_retriever(destination: str, query_text: str, top_k: int) -> tuple
 
 
 def _skill_search_retriever(query_text: str) -> tuple[List[str], List[str], int]:
+    """
+    LocalExpertSkill 的搜索检索器适配函数。
+
+    使用 DuckDuckGo 进行网络搜索，
+    返回 (文本列表, 来源标签列表, 命中数量)。
+
+    参数：
+        query_text: 搜索查询文本
+    """
     results = _ddg_text_search(
         query_text,
         max_results=6,
-        region="cn-zh",
-        safesearch="moderate",
+        region="cn-zh",          # 中文区域
+        safesearch="moderate",   # 中等安全搜索
     )
     texts: List[str] = []
     source_tags: List[str] = []

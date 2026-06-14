@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-MCP 鏈嶅姟鍣ㄥ彲浠ユ彁渚涗笁绉嶄富瑕佺被鍨嬬殑鍔熻兘锛?
-璧勬簮锛氬鎴风鍙互璇诲彇鐨勭被浼兼枃浠剁殑鏁版嵁锛堜緥濡?API 鍝嶅簲鎴栨枃浠跺唴瀹癸級
-宸ュ叿锛氬彲鐢?LLM 璋冪敤鐨勫嚱鏁帮紙缁忕敤鎴锋壒鍑嗭級
-鎻愮ず锛氶鍏堢紪鍐欑殑妯℃澘锛屽府鍔╃敤鎴峰畬鎴愮壒瀹氫换鍔?
-######################################
+MCP 天气服务器 —— 基于 MCP 协议的和风天气查询服务。
 
-MCP 澶╂皵鏈嶅姟鍣?
-鎻愪緵涓や釜宸ュ叿锛?1. get_weather_warning: 鑾峰彇鎸囧畾鍩庡競ID鎴栫粡绾害鐨勫ぉ姘旂伨瀹抽璀?2. get_daily_forecast: 鑾峰彇鎸囧畾鍩庡競ID鎴栫粡绾害鐨勫ぉ姘旈鎶?
+MCP（Model Context Protocol）是一种标准化的工具调用协议，
+允许 LLM 以统一的方式调用外部工具。
+
+本模块提供的工具：
+1. get_weather_warning：获取指定城市/经纬度的天气灾害预警
+2. get_daily_forecast：获取指定城市/经纬度的天气预报
+
 Author: FlyAIBox
 Date: 2025.10.11
 """
@@ -24,7 +25,6 @@ import re
 from urllib.parse import urljoin
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
-from pathlib import Path
 from pypinyin import lazy_pinyin, Style
 
 # 加载 .env 文件中的环境变量
@@ -33,6 +33,7 @@ load_dotenv(dotenv_path, override=True)
 
 # 初始化日志
 def setup_weather_server_logger():
+    """设置 MCP 天气服务器的日志记录器。"""
     ws_logger = logging.getLogger('weather_server')
     ws_logger.setLevel(logging.INFO)
     ws_logger.propagate = False
@@ -41,8 +42,10 @@ def setup_weather_server_logger():
         log_dir.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_dir / "backend.log", encoding='utf-8')
         fh.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                                      datefmt='%Y-%m-%d %H:%M:%S')
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+        )
         fh.setFormatter(formatter)
         ws_logger.addHandler(fh)
     return ws_logger
@@ -56,22 +59,23 @@ mcp = FastMCP(
     host="0.0.0.0",
 )
 
-# 浠庣幆澧冨彉閲忎腑璇诲彇甯搁噺
+# 从环境变量中读取和风天气 API 配置
 QWEATHER_API_BASE = os.getenv("QWEATHER_API_BASE")
 QWEATHER_API_KEY = os.getenv("QWEATHER_API_KEY")
 
 def _normalize_base_url(raw_base: Optional[str]) -> str:
     """
-    纭繚鍩虹 URL 鍖呭惈鍗忚骞朵互鍗曚釜鏂滄潬缁撳熬锛屽吋瀹?.env 涓湭鍐欏崗璁殑鎯呭喌
+    确保基础 URL 包含协议并以单个斜杠结尾，
+    兼容 .env 中未写协议的情况。
     """
     if not raw_base:
-        raise RuntimeError("鏈厤缃?QWEATHER_API_BASE 鐜鍙橀噺")
+        raise RuntimeError("未配置 QWEATHER_API_BASE 环境变量")
 
     base = raw_base.strip()
     if not base.startswith(("http://", "https://")):
         base = f"https://{base.lstrip('/')}"
 
-    # urljoin 要求目录风格以斜杠结尾，避免 'v7/weather/7d' 被覆盖
+    # urljoin 要求目录风格以斜杠结尾，避免路径被覆盖
     if not base.endswith("/"):
         base = f"{base}/"
 
@@ -80,16 +84,19 @@ def _normalize_base_url(raw_base: Optional[str]) -> str:
 try:
     _QWEATHER_BASE_URL = _normalize_base_url(QWEATHER_API_BASE)
 except RuntimeError as err:
-    print(f"[閰嶇疆閿欒] {err}")
+    print(f"[配置错误] {err}")
     _QWEATHER_BASE_URL = None
 
 async def make_qweather_request(endpoint: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    鍚戝拰椋庡ぉ姘?API 鍙戦€佽姹?    
-    鍙傛暟:
-        endpoint: API 绔偣璺緞锛堜笉鍖呭惈鍩虹 URL锛?        params: API 璇锋眰鐨勫弬鏁?        
-    杩斿洖:
-        鎴愬姛鏃惰繑鍥?JSON 鍝嶅簲锛屽け璐ユ椂杩斿洖 None
+    向和风天气 API 发送请求。
+
+    参数:
+        endpoint: API 端点路径（不含基础 URL）
+        params:   API 请求的参数字典
+
+    返回:
+        成功时返回 JSON 响应，失败时返回 None
     """
     if not _QWEATHER_BASE_URL:
         ws_logger.error("QWEATHER_API_BASE 未正确配置，已跳过请求。")
@@ -106,54 +113,56 @@ async def make_qweather_request(endpoint: str, params: Dict[str, Any]) -> Option
     headers = {
         "X-QW-Api-Key": QWEATHER_API_KEY
     }
-    
+
     async with httpx.AsyncClient() as client:
         try:
-            ws_logger.info(f"QWeather璇锋眰: url={url}, params={params}")
+            ws_logger.info(f"QWeather 请求: url={url}, params={params}")
             response = await client.get(url, params=params, headers=headers, timeout=30.0)
-            ws_logger.info(f"QWeather鍝嶅簲鐘舵€? {response.status_code}")
+            ws_logger.info(f"QWeather 响应状态: {response.status_code}")
             response.raise_for_status()
             result = response.json()
-            ws_logger.info(f"QWeather鍝嶅簲鍐呭澶у皬: {len(str(result))} 瀛楃")
+            ws_logger.info(f"QWeather 响应内容大小: {len(str(result))} 字符")
             return result
         except httpx.HTTPStatusError as e:
-            ws_logger.error(f"HTTP 鐘舵€侀敊璇? {e.response.status_code} - {e.response.text}")
+            ws_logger.error(f"HTTP 状态错误: {e.response.status_code} - {e.response.text}")
             return None
         except Exception as e:
-            ws_logger.error(f"API 璇锋眰閿欒: {type(e).__name__}: {e}")
+            ws_logger.error(f"API 请求错误: {type(e).__name__}: {e}")
             return None
 
 def format_warning(warning: Dict[str, Any]) -> str:
     """
-    灏嗗ぉ姘旈璀︽暟鎹牸寮忓寲涓哄彲璇诲瓧绗︿覆
-    
-    鍙傛暟:
-        warning: 澶╂皵棰勮鏁版嵁瀵硅薄
-        
-    杩斿洖:
-        鏍煎紡鍖栧悗鐨勯璀︿俊鎭?    """
+    将天气预警数据格式化为可读字符串。
+
+    参数:
+        warning: 天气预警数据对象
+
+    返回:
+        格式化后的预警信息
+    """
     return f"""
-棰勮ID: {warning.get('id', '鏈煡')}
-鏍囬: {warning.get('title', '鏈煡')}
-鍙戝竷鏃堕棿: {warning.get('pubTime', '鏈煡')}
-寮€濮嬫椂闂? {warning.get('startTime', '鏈煡')}
-缁撴潫鏃堕棿: {warning.get('endTime', '鏈煡')}
-棰勮绫诲瀷: {warning.get('typeName', '鏈煡')}
-棰勮绛夌骇: {warning.get('severity', '鏈煡')} ({warning.get('severityColor', '鏈煡')})
-鍙戝竷鍗曚綅: {warning.get('sender', '鏈煡')}
-鐘舵€? {warning.get('status', '鏈煡')}
+预警ID: {warning.get('id', '未知')}
+标题: {warning.get('title', '未知')}
+发布时间: {warning.get('pubTime', '未知')}
+开始时间: {warning.get('startTime', '未知')}
+结束时间: {warning.get('endTime', '未知')}
+预警类型: {warning.get('typeName', '未知')}
+预警等级: {warning.get('severity', '未知')} ({warning.get('severityColor', '未知')})
+发布单位: {warning.get('sender', '未知')}
+状态: {warning.get('status', '未知')}
 详情信息: {warning.get('text', '无详细信息')}
 """
 
 def _contains_chinese(text: str) -> bool:
-    """Return True if text contains any CJK unified ideograph."""
+    """检查文本是否包含中文字符（CJK 统一表意文字）。"""
     return any('\u4e00' <= ch <= '\u9fff' for ch in text)
 
 
 def _english_lookup_candidates(text: str) -> List[str]:
     """
-    Build fallback candidates for city lookup from English inputs.
-    Example: "New York" -> ["new york", "newyork"].
+    为英文输入构建城市查找的候选列表。
+
+    例如: "New York" -> ["new york", "newyork"]
     """
     normalized = text.strip().lower()
     candidates: List[str] = []
@@ -168,54 +177,60 @@ def _english_lookup_candidates(text: str) -> List[str]:
 
 async def _resolve_qweather_location(raw: Union[str, int], label: str) -> str:
     """
-    Resolve user input into a QWeather-acceptable location:
-    - lat,lon -> pass-through
-    - numeric city id -> pass-through
-    - Chinese/English city name -> geo lookup -> city id
+    将用户输入解析为和风天气可接受的 location 格式。
+
+    支持三种输入：
+    - 经纬度 "lat,lon" → 直接使用
+    - 数字城市 ID → 直接使用
+    - 中文/英文城市名 → 先查地理编码 API 获取城市 ID
     """
     text = str(raw).strip()
 
+    # 情况 1：经纬度格式
     if "," in text:
-        ws_logger.info(f"[{label}]妫€娴嬪埌缁忕含搴︼紝鐩存帴浣跨敤: {text}")
+        ws_logger.info(f"[{label}] 检测到经纬度，直接使用: {text}")
         return text
 
+    # 情况 2：纯数字城市 ID
     if text.isdigit():
-        ws_logger.info(f"[{label}]妫€娴嬪埌鍩庡競ID锛岀洿鎺ヤ娇鐢? {text}")
+        ws_logger.info(f"[{label}] 检测到城市ID，直接使用: {text}")
         return text
 
+    # 情况 3：需要查地理编码
     candidates: List[str] = []
     if _contains_chinese(text):
         py = _convert_chinese_to_pinyin(text)
-        ws_logger.info(f"[{label}]涓枃杞嫾闊? {text} -> {py}")
+        ws_logger.info(f"[{label}] 中文转拼音: {text} -> {py}")
         candidates.append(py)
     elif any(ch.isalpha() for ch in text):
         candidates.extend(_english_lookup_candidates(text))
     else:
-        ws_logger.info(f"[{label}]鏈瘑鍒殑鏍煎紡锛屽師鏍蜂娇鐢? {text}")
+        ws_logger.info(f"[{label}] 未识别的格式，原样使用: {text}")
         return text
 
     for candidate in candidates:
-        ws_logger.info(f"[{label}]灏濊瘯鍩庡競妫€绱? {candidate}")
+        ws_logger.info(f"[{label}] 尝试城市检索: {candidate}")
         lookup = await make_qweather_request(
             "geo/v2/city/lookup",
             {"location": candidate, "lang": "zh"}
         )
         if not lookup or lookup.get("code") != "200":
-            ws_logger.warning(f"[{label}]鍩庡競妫€绱㈠け璐? {candidate}")
+            ws_logger.warning(f"[{label}] 城市检索失败: {candidate}")
             continue
 
         locations = lookup.get("location", [])
         if not locations:
-            ws_logger.info(f"[{label}]鍩庡競妫€绱㈡棤缁撴灉: {candidate}")
+            ws_logger.info(f"[{label}] 城市检索无结果: {candidate}")
             continue
 
+        # 优先选择 type == "city" 的主城市
         chosen = next((loc for loc in locations if loc.get("type") == "city"), locations[0])
         city_id = chosen.get("id")
         if city_id:
-            ws_logger.info(f"[{label}]瑙ｆ瀽瀹屾垚: {text} -> {city_id}")
+            ws_logger.info(f"[{label}] 解析完成: {text} -> {city_id}")
             return city_id
 
-    ws_logger.warning(f"[{label}]鏃犳硶瑙ｆ瀽鍩庡競ID锛屽洖閫€鍘熷€? {text}")
+    ws_logger.warning(f"[{label}] 无法解析城市ID，回退原值: {text}")
     return text
 
 
@@ -256,24 +271,25 @@ async def get_weather_warning(location: Union[str, int]) -> str:
 
 def format_daily_forecast(daily: Dict[str, Any]) -> str:
     """
-    灏嗗ぉ姘旈鎶ユ暟鎹牸寮忓寲涓哄彲璇诲瓧绗︿覆
-    
-    鍙傛暟:
-        daily: 澶╂皵棰勬姤鏁版嵁瀵硅薄
-        
-    杩斿洖:
-        鏍煎紡鍖栧悗鐨勯鎶ヤ俊鎭?    """
+    将天气预报数据格式化为可读字符串。
+
+    参数:
+        daily: 天气预报数据对象
+
+    返回:
+        格式化后的预报信息
+    """
     return f"""
-鏃ユ湡: {daily.get('fxDate', '鏈煡')}
-鏃ュ嚭: {daily.get('sunrise', '鏈煡')}  鏃ヨ惤: {daily.get('sunset', '鏈煡')}
-鏈€楂樻俯搴? {daily.get('tempMax', '鏈煡')}掳C  鏈€浣庢俯搴? {daily.get('tempMin', '鏈煡')}掳C
-鐧藉ぉ澶╂皵: {daily.get('textDay', '鏈煡')}  澶滈棿澶╂皵: {daily.get('textNight', '鏈煡')}
-鐧藉ぉ椋庡悜: {daily.get('windDirDay', '鏈煡')} {daily.get('windScaleDay', '鏈煡')}绾?({daily.get('windSpeedDay', '鏈煡')}km/h)
-澶滈棿椋庡悜: {daily.get('windDirNight', '鏈煡')} {daily.get('windScaleNight', '鏈煡')}绾?({daily.get('windSpeedNight', '鏈煡')}km/h)
-鐩稿婀垮害: {daily.get('humidity', '鏈煡')}%
-闄嶆按閲? {daily.get('precip', '鏈煡')}mm
-绱绾挎寚鏁? {daily.get('uvIndex', '鏈煡')}
-鑳借搴? {daily.get('vis', '鏈煡')}km
+日期: {daily.get('fxDate', '未知')}
+日出: {daily.get('sunrise', '未知')}  日落: {daily.get('sunset', '未知')}
+最高温度: {daily.get('tempMax', '未知')}°C  最低温度: {daily.get('tempMin', '未知')}°C
+白天天气: {daily.get('textDay', '未知')}  夜间天气: {daily.get('textNight', '未知')}
+白天风向: {daily.get('windDirDay', '未知')} {daily.get('windScaleDay', '未知')}级({daily.get('windSpeedDay', '未知')}km/h)
+夜间风向: {daily.get('windDirNight', '未知')} {daily.get('windScaleNight', '未知')}级({daily.get('windSpeedNight', '未知')}km/h)
+相对湿度: {daily.get('humidity', '未知')}%
+降水量: {daily.get('precip', '未知')}mm
+紫外线指数: {daily.get('uvIndex', '未知')}
+能见度: {daily.get('vis', '未知')}km
 """
 
 @mcp.tool()
@@ -318,55 +334,60 @@ async def get_daily_forecast(location: Union[str, int], days: int = 3) -> str:
 
 def _convert_chinese_to_pinyin(chinese_text: str) -> str:
     """
-    灏嗕腑鏂囧煄甯傚悕杞崲涓烘嫾闊筹紙鍏ㄦ嫾锛?    
+    将中文城市名转换为拼音（全拼）。
+
     Args:
-        chinese_text: 涓枃鍩庡競鍚嶏紝濡?"瑗垮畞"
-        
+        chinese_text: 中文城市名，如"西宁"
+
     Returns:
-        str: 鎷奸煶鍏ㄦ嫾锛屽 "xining"
+        str: 拼音全拼，如 "xining"
     """
     try:
-        # 浣跨敤 pypinyin 灏嗕腑鏂囪浆鎹负鎷奸煶
+        # 使用 pypinyin 将中文转换为拼音
         pinyin_list = lazy_pinyin(chinese_text, style=Style.NORMAL)
         pinyin = ''.join(pinyin_list)
-        ws_logger.info(f"涓枃杞嫾闊? {chinese_text} 鈫?{pinyin}")
+        ws_logger.info(f"中文转拼音: {chinese_text} → {pinyin}")
         return pinyin
     except Exception as e:
-        ws_logger.error(f"涓枃杞嫾闊冲け璐? {chinese_text} - {str(e)}")
-        return chinese_text  # 杞崲澶辫触鏃惰繑鍥炲師鏂囨湰
+        ws_logger.error(f"中文转拼音失败: {chinese_text} - {str(e)}")
+        return chinese_text  # 转换失败时返回原文
 
 
 async def lookup_city_id_by_pinyin(pinyin: str) -> str:
     """
-    鏍规嵁鍩庡競鍚嶇О鐨勬嫾闊筹紙鍏ㄦ嫾锛夋煡鎵惧煄甯侷D銆?
-    鍙傛暟:
-        pinyin: 鍩庡競鍚嶇О鐨勬嫾闊筹紙鍏ㄦ嫾锛夛紝濡?"xining"
+    根据城市名称的拼音（全拼）查找城市ID。
 
-    杩斿洖:
-        鑻ユ垚鍔燂紝杩斿洖鍖归厤鍩庡競瀵硅薄鐨勭簿绠€ JSON 瀛楃涓诧紙鍖呭惈 name銆乮d銆乴at銆乴on銆乤dm1 绛夊瓧娈碉級锛?        鑻ュけ璐ユ垨鏈壘鍒帮紝杩斿洖璇存槑鏂囨湰銆?    """
+    参数:
+        pinyin: 城市名称的拼音（全拼），如"xining"
+
+    返回:
+        若成功，返回匹配城市对象的精简 JSON 字符串（包含 name、id、lat、lon、adm1 等字段）；
+        若失败或未找到，返回说明文本。
+    """
     params = {
         "location": pinyin,
         "lang": "zh"
     }
 
     endpoint = "geo/v2/city/lookup"
-    ws_logger.info(f"璋冪敤 [鏌ユ壘鍩庡競ID]| endpoint={endpoint}, params={params}")
+    ws_logger.info(f"调用 [查找城市ID] | endpoint={endpoint}, params={params}")
     data = await make_qweather_request(endpoint, params)
 
     if not data:
-        ws_logger.warning("[鏌ユ壘鍩庡競ID]杩斿洖绌烘垨澶辫触")
+        ws_logger.warning("[查找城市ID] 返回空或失败")
         return "无法查询城市ID或API请求失败。"
 
     if data.get("code") != "200":
-        ws_logger.error(f"[鏌ユ壘鍩庡競ID]API閿欒: {data.get('code')}")
-        return f"API 杩斿洖閿欒: {data.get('code')}"
+        ws_logger.error(f"[查找城市ID] API错误: {data.get('code')}")
+        return f"API 返回错误: {data.get('code')}"
 
     locations = data.get("location", [])
     if not locations:
-        ws_logger.info(f"[鏌ユ壘鍩庡競ID]鏃犲尮閰嶇粨鏋?| pinyin={pinyin}")
+        ws_logger.info(f"[查找城市ID] 无匹配结果 | pinyin={pinyin}")
         return f"未找到与 {pinyin} 匹配的城市。"
 
-    # 浼樺厛閫夋嫨 type == "city" 鐨勪富鍩庡競锛屽惁鍒欏洖閫€绗竴涓?    chosen = None
+    # 优先选择 type == "city" 的主城市，否则回退第一个
+    chosen = None
     for loc in locations:
         if loc.get("type") == "city":
             chosen = loc
@@ -374,7 +395,7 @@ async def lookup_city_id_by_pinyin(pinyin: str) -> str:
     if chosen is None:
         chosen = locations[0]
 
-    # 浠呰繑鍥炲父鐢ㄥ瓧娈碉紝閬垮厤鍐椾綑
+    # 仅返回常用字段，避免冗余
     result = {
         "name": chosen.get("name"),
         "id": chosen.get("id"),
@@ -389,7 +410,7 @@ async def lookup_city_id_by_pinyin(pinyin: str) -> str:
     }
 
     ws_logger.info(
-        f"[鏌ユ壘鍩庡競ID]鍛戒腑: name={result['name']}, id={result['id']}"
+        f"[查找城市ID] 命中: name={result['name']}, id={result['id']}"
     )
 
     # 以紧凑 JSON 字符串形式返回
@@ -397,14 +418,14 @@ async def lookup_city_id_by_pinyin(pinyin: str) -> str:
         import json as _json
         return _json.dumps(result, ensure_ascii=False)
     except Exception:
-        # 鍏滃簳涓哄彲璇诲瓧绗︿覆
+        # 兜底为可读字符串
         return f"{result}"
 
 if __name__ == "__main__":
     ws_logger.info("正在启动 MCP 天气服务器...")
-    ws_logger.info("鎻愪緵宸ュ叿: get_weather_warning, get_daily_forecast")
+    ws_logger.info("提供工具: get_weather_warning, get_daily_forecast")
     ws_logger.info("请确保环境变量 QWEATHER_API_KEY 已设置")
     ws_logger.info("使用 Ctrl+C 停止服务器")
-    
-    # 鍒濆鍖栧苟杩愯鏈嶅姟鍣?    mcp.run(transport='stdio') 
 
+    # 初始化并运行服务器
+    mcp.run(transport='stdio')

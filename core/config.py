@@ -39,7 +39,7 @@ class Settings(BaseSettings):
         description="默认模型名称",
     )
     llm_temperature: float = Field(
-        0.7,
+        0,
         ge=0.0,
         le=2.0,
         description="LLM 采样温度（0=确定性，1=创造性）",

@@ -1,15 +1,11 @@
-﻿from apis.base import BaseProvider
-from apis.providers.amap import AmapHotelProvider, AmapAttractionProvider
-from apis.providers.tianxing import TianxingFlightProvider, TianxingTrainProvider
-from apis.providers.qweather import QweatherProvider
-from apis.providers.mock_price import MockPriceProvider
+﻿"""
+API 数据接入层（Provider 层）。
 
-__all__ = [
-    "BaseProvider",
-    "AmapHotelProvider",
-    "AmapAttractionProvider",
-    "TianxingFlightProvider",
-    "TianxingTrainProvider",
-    "QweatherProvider",
-    "MockPriceProvider",
-]
+本层负责封装所有外部 API 的访问逻辑，包括：
+- 高德地图（酒店 + 景点 POI 搜索）
+- 天行数据（航班 + 高铁查询）
+- 和风天气（天气预报）
+- Mock 价格（酒店模拟价格）
+
+设计原则：Agent 不直接写 HTTP 请求，而是通过 Provider 间接访问外部 API。
+"""

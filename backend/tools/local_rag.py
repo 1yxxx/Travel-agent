@@ -1,5 +1,24 @@
 """
-Utilities for local_expert RAG retrieval via Chroma Cloud.
+本地知识库 RAG 检索 —— 基于 Chroma 云服务的向量搜索。
+
+什么是 RAG（Retrieval-Augmented Generation，检索增强生成）？
+- 简单说：先搜索相关文档，再把搜索结果喂给 LLM，让 LLM 基于真实知识回答
+- 好处：LLM 不会"胡说八道"，回答基于本地知识库的事实
+
+工作流程：
+1. 用户问："成都有什么小众景点？"
+2. 系统在 Chroma 向量数据库中搜索与"成都+小众景点"最相似的文档片段
+3. 把搜索结果格式化后返回给 LocalExpertAgent
+4. Agent 基于这些真实知识生成回答
+
+为什么用 Chroma？
+- 轻量级向量数据库，适合本地知识检索
+- 支持云服务模式（Chroma Cloud），不需要自己部署服务器
+- 支持按城市过滤（city 字段），避免"问成都却搜到北京"的跨城市污染
+
+Python 新手提示：
+- @lru_cache 是缓存装饰器，函数结果会被缓存，下次调用直接返回缓存值
+- maxsize=1 表示只缓存最近一次的结果（因为 Chroma 客户端只需要创建一次）
 """
 
 from __future__ import annotations
@@ -11,10 +30,12 @@ from typing import Any, Dict, List, Optional
 
 import chromadb
 
-
+# 创建本模块专用的日志记录器
 logger = logging.getLogger("local_rag")
 
+# ======================== 城市名称映射 ========================
 
+# 将中文城市名映射为英文标识（用于 Chroma 中按 city 字段过滤）
 CITY_ALIASES = {
     "beijing": "beijing",
     "北京": "beijing",
@@ -30,17 +51,47 @@ CITY_ALIASES = {
 
 
 def normalize_city(city: str) -> str:
+    """
+    将城市名标准化为 Chroma 中使用的英文标识。
+
+    例如：
+    - "北京"  → "beijing"
+    - "上海"  → "shanghai"
+    - "成都"  → "chengdu"（不在映射表中，转为小写）
+    - ""      → ""（空字符串直接返回）
+
+    参数：
+        city: 原始城市名（中英文均可）
+
+    返回：
+        标准化后的城市标识字符串
+    """
     key = (city or "").strip()
     if not key:
         return ""
+    # 先尝试精确匹配，再尝试小写匹配，最后转为小写
     return CITY_ALIASES.get(key.lower(), CITY_ALIASES.get(key, key.lower()))
 
 
+# ======================== Chroma 配置 ========================
+
 def get_collection_name() -> str:
+    """
+    获取 Chroma 集合（Collection）名称。
+
+    集合类似于关系数据库中的"表"，存储了所有本地知识文档的向量。
+    默认名称可通过环境变量 CHROMA_COLLECTION 自定义。
+    """
     return os.getenv("CHROMA_COLLECTION", "travel_local_expert_knowledge").strip()
 
 
 def get_default_top_k() -> int:
+    """
+    获取默认的检索结果数量。
+
+    top_k 表示"返回最相似的 K 条结果"。
+    可通过环境变量 CHROMA_TOP_K 自定义，默认为 4，限制在 1-10 之间。
+    """
     value = os.getenv("CHROMA_TOP_K", "4").strip()
     try:
         top_k = int(value)
@@ -50,71 +101,162 @@ def get_default_top_k() -> int:
 
 
 def _required_env(name: str) -> str:
+    """
+    读取必需的环境变量，如果缺失则抛出异常。
+
+    Chroma Cloud 需要三个环境变量：
+    - CHROMA_API_KEY：API 密钥
+    - CHROMA_TENANT：租户标识
+    - CHROMA_DATABASE：数据库名称
+    """
     value = os.getenv(name, "").strip()
     if not value:
-        raise ValueError(f"Missing required environment variable: {name}")
+        raise ValueError(f"缺少必需的环境变量: {name}")
     return value
 
 
+# ======================== Chroma 客户端 ========================
+
 @lru_cache(maxsize=1)
 def get_chroma_client() -> chromadb.api.ClientAPI:
+    """
+    获取 Chroma Cloud 客户端（单例模式）。
+
+    @lru_cache(maxsize=1) 的作用：
+    - 第一次调用时创建客户端，后续调用直接返回缓存的客户端
+    - 避免每次查询都重新建立连接
+
+    需要三个环境变量：CHROMA_API_KEY、CHROMA_TENANT、CHROMA_DATABASE
+    """
     api_key = _required_env("CHROMA_API_KEY")
     tenant = _required_env("CHROMA_TENANT")
     database = _required_env("CHROMA_DATABASE")
+    # CloudClient 连接到 Chroma 云服务（不需要本地部署）
     return chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
 
 
+# ======================== 查询结果处理 ========================
+
 def _flatten_query_result(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    将 Chroma 返回的嵌套查询结果展平为易用的字典列表。
+
+    Chroma 的查询结果格式是嵌套的（documents[0][i], metadatas[0][i]...），
+    这个函数将其转换为扁平的列表，每个元素包含一条完整结果。
+
+    转换前后对比：
+    输入（Chroma 原生格式）：
+        {
+            "documents": [["doc1", "doc2"]],
+            "metadatas": [["meta1", "meta2"]],
+            "distances": [[0.1, 0.3]],
+            "ids": [["id1", "id2"]]
+        }
+
+    输出（展平格式）：
+        [
+            {"id": "id1", "document": "doc1", "metadata": "meta1", "distance": 0.1},
+            {"id": "id2", "document": "doc2", "metadata": "meta2", "distance": 0.3},
+        ]
+
+    参数：
+        result: Chroma 的 query() 方法返回的原始结果
+
+    返回：
+        展平后的命中列表
+    """
+    # 安全解包：每个字段都是嵌套列表，取第一层
     docs_nested = result.get("documents") or [[]]
     metas_nested = result.get("metadatas") or [[]]
     dists_nested = result.get("distances") or [[]]
     ids_nested = result.get("ids") or [[]]
 
+    # 取出内层列表
     docs = docs_nested[0] if docs_nested else []
     metas = metas_nested[0] if metas_nested else []
     dists = dists_nested[0] if dists_nested else []
     ids = ids_nested[0] if ids_nested else []
 
+    # 逐条组装为字典
     hits: List[Dict[str, Any]] = []
     for idx, doc in enumerate(docs):
         meta = metas[idx] if idx < len(metas) and metas[idx] else {}
         distance = dists[idx] if idx < len(dists) else None
         chunk_id = ids[idx] if idx < len(ids) else None
-        hits.append(
-            {
-                "id": chunk_id,
-                "document": doc,
-                "metadata": meta,
-                "distance": distance,
-            }
-        )
+        hits.append({
+            "id": chunk_id,          # 文档片段的唯一 ID
+            "document": doc,         # 文档片段的文本内容
+            "metadata": meta,        # 元数据（城市、文件名等）
+            "distance": distance,    # 向量距离（越小越相似）
+        })
     return hits
 
 
-def query_local_knowledge(destination: str, query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+# ======================== 知识库查询 ========================
+
+def query_local_knowledge(
+    destination: str,
+    query: str,
+    top_k: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     """
-    Query Chroma Cloud for local knowledge.
-    Use city-filtered retrieval only to avoid cross-city contamination.
+    查询 Chroma 本地知识库，获取与目的地相关的知识片段。
+
+    关键设计：使用 city 字段过滤，避免跨城市污染。
+    例如：查询"北京有什么好吃的"时，只会搜索北京的知识片段，不会混入上海的内容。
+
+    参数：
+        destination: 目的地城市名（如"北京"、"上海"）
+        query:       查询文本（如"北京 美食 特色小吃"）
+        top_k:       返回结果数量（默认 4，最大 10）
+
+    返回：
+        命中的知识片段列表，每个元素包含 document、metadata、distance 等字段
     """
+    # 获取 Chroma 客户端和集合
     client = get_chroma_client()
     collection = client.get_collection(name=get_collection_name())
+
+    # 确定返回数量
     n_results = top_k if top_k is not None else get_default_top_k()
     n_results = max(1, min(n_results, 10))
 
+    # 标准化城市名，用于按 city 字段过滤
     city = normalize_city(destination)
-    where = {"city": city} if city else None
+    where = {"city": city} if city else None  # 有城市则过滤，无城市则全局搜索
 
+    # 执行向量相似度搜索
     result = collection.query(
-        query_texts=[query],
-        n_results=n_results,
-        where=where,
-        include=["documents", "metadatas", "distances"],
+        query_texts=[query],         # 查询文本
+        n_results=n_results,         # 返回数量
+        where=where,                 # 过滤条件（按城市）
+        include=["documents", "metadatas", "distances"],  # 需要返回的字段
     )
+
+    # 展平结果并返回
     hits = _flatten_query_result(result)
     return hits
 
 
+# ======================== 结果格式化 ========================
+
 def format_hits_for_llm(hits: List[Dict[str, Any]]) -> str:
+    """
+    将检索命中结果格式化为 LLM 可消费的文本。
+
+    格式：
+        1. [source=beijing.md#chunk=3]
+        故宫是中国明清两代的皇家宫殿...
+
+        2. [source=beijing.md#chunk=7]
+        北京烤鸭是北京的标志性美食...
+
+    参数：
+        hits: query_local_knowledge 返回的命中列表
+
+    返回：
+        格式化的文本，可直接作为 LLM 的上下文
+    """
     if not hits:
         return "未检索到本地知识库内容。"
 
@@ -122,9 +264,10 @@ def format_hits_for_llm(hits: List[Dict[str, Any]]) -> str:
     for i, hit in enumerate(hits, 1):
         doc = (hit.get("document") or "").strip()
         meta = hit.get("metadata") or {}
-        source = meta.get("source_file", "unknown")
-        chunk_index = meta.get("chunk_index", "?")
+        source = meta.get("source_file", "unknown")    # 来源文件名
+        chunk_index = meta.get("chunk_index", "?")      # 文档分块序号
         lines.append(
             f"{i}. [source={source}#chunk={chunk_index}]\n{doc}"
         )
+
     return "\n\n".join(lines)
