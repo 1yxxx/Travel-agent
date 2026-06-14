@@ -450,7 +450,12 @@ async def root():
             "chat": "/chat - 自然语言交互",
             "plan": "/plan - 创建旅行规划",
             "status": "/status/{task_id} - 查询任务状态",
+            "stream": "/stream/{task_id} - SSE 流式事件",
             "download": "/download/{task_id} - 下载结果",
+            "events": "/tasks/{task_id}/events - 查询事件列表",
+            "retry": "/tasks/{task_id}/retry - 重试任务",
+            "cancel": "/tasks/{task_id}/cancel - 取消任务",
+            "tasks": "/tasks - 列出所有任务",
             "docs": "/docs - API文档"
         }
     }
@@ -1219,23 +1224,201 @@ async def download_result(task_id: str):
 
 # --------------------------- 辅助路由：任务列表、简化/模拟模式 ---------------------------
 @app.get("/tasks")
-async def list_tasks():
+async def list_tasks(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
     """
-    列出所有任务
+    列出所有任务（支持分页和状态筛选）。
 
     将当前内存中的 `planning_tasks` 转化为摘要列表，便于调试或在管理端展示所有历史任务。
     每个任务包含 task_id、状态、创建时间及目的地信息。
+
+    查询参数：
+        status: 可选的状态筛选（started/processing/completed/failed）
+        limit: 每页数量（默认 50，最大 200）
+        offset: 偏移量（默认 0）
     """
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
+
+    tasks_list = []
+    for task_id, task in planning_tasks.items():
+        if status and task.get("status") != status:
+            continue
+        tasks_list.append({
+            "task_id": task_id,
+            "status": task.get("status"),
+            "progress": task.get("progress", 0),
+            "current_agent": task.get("current_agent", ""),
+            "created_at": task.get("created_at"),
+            "destination": task.get("request", {}).get("destination", "未知"),
+        })
+
+    # 按创建时间倒序排列
+    tasks_list.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+    total = len(tasks_list)
+
     return {
-        "tasks": [
-            {
-                "task_id": task_id,
-                "status": task["status"],
-                "created_at": task["created_at"],
-                "destination": task["request"].get("destination", "未知")
-            }
-            for task_id, task in planning_tasks.items()
-        ]
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "tasks": tasks_list[offset : offset + limit],
+    }
+
+
+@app.get("/tasks/{task_id}/events")
+async def get_task_events(
+    task_id: str,
+    since: int = 0,
+    limit: int = 50,
+):
+    """
+    获取任务的详细事件列表。
+
+    支持增量查询（通过 since 参数指定起始序号）。
+
+    查询参数：
+        since: 起始事件序号（不含），默认 0 表示从头开始
+        limit: 返回事件数量上限（默认 50，最大 500）
+    """
+    if task_id not in planning_tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    limit = min(max(limit, 1), 500)
+    task = planning_tasks[task_id]
+    events = task.get("events", [])
+
+    # 过滤出 since 之后的事件
+    filtered = [e for e in events if int(e.get("seq", 0)) > since]
+    result = filtered[:limit]
+
+    return {
+        "task_id": task_id,
+        "total_events": len(events),
+        "returned": len(result),
+        "since": since,
+        "events": result,
+        "has_more": len(filtered) > limit,
+    }
+
+
+@app.post("/tasks/{task_id}/retry")
+async def retry_task(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+):
+    """
+    重试失败或部分完成的任务。
+
+    仅允许重试状态为 failed 或 completed（但 completion_status=partial）的任务。
+    重试时会重新执行完整的 Supervisor 规划流程。
+
+    Args:
+        task_id: 要重试的任务 ID
+    """
+    if task_id not in planning_tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = planning_tasks[task_id]
+    current_status = task.get("status", "")
+
+    # 只允许重试失败或部分完成的任务
+    if current_status not in ("failed", "completed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"任务状态为 '{current_status}'，不允许重试。只有 failed 或 completed（部分完成）的任务可以重试。",
+        )
+
+    request_data = task.get("request", {})
+    if not request_data:
+        raise HTTPException(status_code=400, detail="任务缺少原始请求数据，无法重试")
+
+    # 重置任务状态
+    planning_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "started",
+        "progress": 0,
+        "current_agent": "系统初始化（重试）",
+        "message": "任务正在重新执行...",
+        "created_at": task.get("created_at", datetime.now().isoformat()),
+        "retry_at": datetime.now().isoformat(),
+        "retry_count": task.get("retry_count", 0) + 1,
+        "request": request_data,
+        "result": None,
+        "events": [],
+        "next_event_seq": 1,
+    }
+
+    append_task_event(
+        task_id,
+        "task_retry",
+        f"任务重试（第 {planning_tasks[task_id]['retry_count']} 次）",
+        progress=0,
+        status="started",
+        agent="system",
+    )
+
+    save_tasks_state()
+    background_tasks.add_task(run_planning_task, task_id, request_data)
+
+    return {
+        "task_id": task_id,
+        "status": "started",
+        "message": f"任务已重新启动（第 {planning_tasks[task_id]['retry_count']} 次重试）",
+        "retry_count": planning_tasks[task_id]["retry_count"],
+    }
+
+
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """
+    取消正在执行的任务。
+
+    仅允许取消状态为 started 或 processing 的任务。
+    取消后任务状态变为 cancelled，不再继续执行。
+
+    Args:
+        task_id: 要取消的任务 ID
+    """
+    if task_id not in planning_tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = planning_tasks[task_id]
+    current_status = task.get("status", "")
+
+    # 只允许取消进行中的任务
+    if current_status not in ("started", "processing"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"任务状态为 '{current_status}'，无法取消。只有 started 或 processing 状态的任务可以取消。",
+        )
+
+    # 标记为取消
+    planning_tasks[task_id]["status"] = "cancelled"
+    planning_tasks[task_id]["progress"] = 100
+    planning_tasks[task_id]["message"] = "任务已被用户取消"
+    planning_tasks[task_id]["cancelled_at"] = datetime.now().isoformat()
+
+    append_task_event(
+        task_id,
+        "task_cancelled",
+        "任务已被用户取消",
+        progress=100,
+        status="cancelled",
+        agent="system",
+    )
+
+    save_tasks_state()
+    _sync_task_state_to_redis(task_id)
+
+    api_logger.info(f"任务 {task_id}: 已被用户取消")
+
+    return {
+        "task_id": task_id,
+        "status": "cancelled",
+        "message": "任务已取消",
     }
 
 @app.post("/simple-plan")

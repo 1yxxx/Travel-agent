@@ -673,30 +673,197 @@ def create_travel_form():
     return None
 
 def display_planning_progress(task_id: str):
-    """显示规划进度"""
+    """
+    显示规划进度 —— 增强版。
+
+    功能：
+    - 实时进度条（0-100%）
+    - Agent 并行执行状态面板（每个 Agent 独立卡片）
+    - SSE 优先，自动回退轮询
+    - 超时后提供手动检查选项
+    """
     st.markdown("### 🔄 规划进度")
 
+    # 布局：进度条 + Agent 面板 + 调试信息
     progress_container = st.container()
     status_container = st.container()
+
+    # Agent 状态面板（并行进度可视化）
+    agent_panel = st.container()
+
     debug_container = st.container()
 
-    # 创建进度条和状态显示
+    # 创建 UI 元素
     progress_bar = progress_container.progress(0)
     status_text = status_container.empty()
+
+    # Agent 面板 —— 使用 expander 展示各 Agent 状态
+    agent_status_text = agent_panel.empty()
+
     debug_text = debug_container.empty()
-    
-    # 轮询状态更新
-    max_attempts = 360  # 最多等待6分钟（每秒轮询一次）
+
+    # 追踪各 Agent 状态
+    agent_states: Dict[str, Dict[str, Any]] = {}
+
+    # 先尝试 SSE 流式模式
+    with st.spinner("正在通过实时流连接..."):
+        stream_result = stream_planning_progress(
+            task_id,
+            progress_bar,
+            status_text,
+            agent_status_text,
+            agent_states,
+        )
+
+    if stream_result is not None:
+        # SSE 模式成功
+        if stream_result.get("status") == "completed":
+            st.success("🎉 旅行规划完成！")
+            final_status = get_planning_status(task_id)
+            return final_status.get("result") if final_status else None
+        elif stream_result.get("status") == "failed":
+            st.error(f"❌ 规划失败: {stream_result.get('message', '')}")
+            return None
+        elif stream_result.get("status") == "cancelled":
+            st.warning("⚠️ 任务已取消")
+            return None
+
+    # SSE 不可用 → 回退到轮询模式
+    st.info("📡 切换到轮询模式...")
+    return _poll_planning_progress(
+        task_id,
+        progress_bar,
+        status_text,
+        agent_status_text,
+        agent_states,
+        debug_text,
+    )
+
+
+def stream_planning_progress(
+    task_id: str,
+    progress_bar,
+    status_text,
+    agent_status_text,
+    agent_states: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    通过 SSE 实时流式更新进度。
+
+    相比轮询模式的优势：
+    - 实时性更好（事件驱动 vs 每秒轮询）
+    - 可以看到每个 Agent 的开始和完成事件
+    - 支持工具调用级别的细粒度展示
+
+    Returns:
+        SSE 终端事件的 payload，如果流不可用返回 None
+    """
+    stream_url = f"{API_BASE_URL}/stream/{task_id}"
+    started = time.time()
+    timeout_seconds = 600  # 10 分钟超时
+
+    try:
+        with requests.get(stream_url, stream=True, timeout=(10, 600)) as response:
+            if response.status_code != 200:
+                return None
+
+            current_event = "task_update"
+
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if raw_line is None:
+                    continue
+
+                line = raw_line.strip()
+                if not line or line.startswith(":"):
+                    continue
+                elif line.startswith("event:"):
+                    current_event = line.split(":", 1)[1].strip()
+                    continue
+                elif line.startswith("data:"):
+                    payload_text = line.split(":", 1)[1].strip()
+                    try:
+                        payload = json.loads(payload_text)
+                    except Exception:
+                        continue
+
+                    # 更新进度条
+                    progress = payload.get("progress")
+                    if isinstance(progress, (int, float)):
+                        progress_val = max(0, min(100, int(progress)))
+                        progress_bar.progress(
+                            progress_val / 100.0,
+                            text=f"进度: {progress_val}%",
+                        )
+
+                    # 更新状态文本
+                    agent = payload.get("agent", "")
+                    message = payload.get("message", "")
+                    event_type = payload.get("type", "")
+
+                    if agent and agent != "supervisor":
+                        # 更新 Agent 面板
+                        status_icon = {
+                            "agent_started": "🔄",
+                            "agent_completed": "✅",
+                            "tool_called": "🔧",
+                            "tool_completed": "📊",
+                            "tool_degraded": "⚠️",
+                            "tool_failed": "❌",
+                        }.get(event_type, "⏳")
+
+                        agent_states[agent] = {
+                            "status": event_type,
+                            "message": message,
+                            "icon": status_icon,
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                        }
+
+                        # 渲染 Agent 面板
+                        _render_agent_panel(agent_status_text, agent_states)
+
+                    if message:
+                        status_text.info(f"📋 {message}")
+
+                    # 检查终端事件
+                    if current_event in {
+                        "task_completed",
+                        "task_failed",
+                        "task_cancelled",
+                        "task_terminal",
+                    }:
+                        return payload
+
+                if time.time() - started > timeout_seconds:
+                    return None
+
+    except Exception:
+        return None
+
+    return None
+
+
+def _poll_planning_progress(
+    task_id: str,
+    progress_bar,
+    status_text,
+    agent_status_text,
+    agent_states: Dict[str, Any],
+    debug_text,
+) -> Optional[Dict[str, Any]]:
+    """
+    轮询模式进度监控（SSE 不可用时的回退方案）。
+
+    每秒轮询一次 /status/{task_id}，最多等待 10 分钟。
+    """
+    max_attempts = 600  # 最多 10 分钟
     attempt = 0
-    
-    last_known_status = None
     consecutive_failures = 0
+    last_known_status = None
 
     while attempt < max_attempts:
         status = get_planning_status(task_id)
 
         if status:
-            # 重置失败计数
             consecutive_failures = 0
             last_known_status = status
 
@@ -706,46 +873,48 @@ def display_planning_progress(task_id: str):
             current_agent = status.get("current_agent", "")
 
             # 更新进度条
-            progress_bar.progress(progress / 100)
+            progress_bar.progress(progress / 100, text=f"进度: {progress}%")
 
-            # 更新状态文本
+            # 更新状态
             status_text.markdown(f"""
             **状态**: {current_status}
             **当前智能体**: {current_agent}
             **消息**: {message}
-            **进度**: {progress}%
             """)
+
+            # 更新 Agent 面板（轮询模式粒度较粗）
+            if current_agent and current_agent not in agent_states:
+                agent_states[current_agent] = {
+                    "status": "active",
+                    "message": message,
+                    "icon": "⏳",
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                }
+                _render_agent_panel(agent_status_text, agent_states)
 
             # 检查是否完成
             if current_status == "completed":
+                # 标记所有 Agent 为完成
+                for ag in agent_states:
+                    if agent_states[ag]["status"] == "active":
+                        agent_states[ag]["status"] = "agent_completed"
+                        agent_states[ag]["icon"] = "✅"
+                _render_agent_panel(agent_status_text, agent_states)
                 st.success("🎉 旅行规划完成！")
                 return status.get("result")
             elif current_status == "failed":
                 st.error(f"❌ 规划失败: {message}")
                 return None
+            elif current_status == "cancelled":
+                st.warning("⚠️ 任务已取消")
+                return None
 
         else:
-            # 状态查询失败，但继续尝试
             consecutive_failures += 1
-            if last_known_status:
-                # 显示最后已知状态
-                progress = last_known_status.get("progress", 0)
-                current_status = last_known_status.get("status", "unknown")
-                message = f"连接中断，正在重试... (失败次数: {consecutive_failures})"
-                current_agent = last_known_status.get("current_agent", "")
-
-                status_text.markdown(f"""
-                **状态**: {current_status} (连接中断)
-                **当前智能体**: {current_agent}
-                **消息**: {message}
-                **进度**: {progress}%
-                """)
-
-            # 如果连续失败太多次，提示用户
             if consecutive_failures >= 10:
                 st.warning("⚠️ 网络连接不稳定，但任务可能仍在后台处理中...")
 
-        # 显示调试信息
+        # 调试信息
         debug_text.markdown(f"""
         <details>
         <summary>🔍 调试信息</summary>
@@ -753,32 +922,79 @@ def display_planning_progress(task_id: str):
         - **任务ID**: {task_id}
         - **尝试次数**: {attempt + 1}/{max_attempts}
         - **连续失败**: {consecutive_failures}
-        - **API地址**: {API_BASE_URL}
         - **当前时间**: {time.strftime('%H:%M:%S')}
         </details>
         """, unsafe_allow_html=True)
 
         time.sleep(1)
         attempt += 1
-    
-    # 超时后提供手动检查选项
-    st.warning("⏰ 自动监控已超时，但任务可能仍在处理中")
 
-    col1, col2 = st.columns(2)
+    # 超时
+    st.warning("⏰ 自动监控已超时，但任务可能仍在处理中")
+    _render_manual_check_buttons(task_id)
+    return None
+
+
+def _render_agent_panel(placeholder, agent_states: Dict[str, Any]):
+    """
+    渲染 Agent 并行执行状态面板。
+
+    展示每个 Agent 的：
+    - 状态图标（🔄执行中 / ✅完成 / ⚠️降级 / ❌失败）
+    - Agent 名称
+    - 当前消息
+    - 更新时间
+    """
+    if not agent_states:
+        return
+
+    # Agent 展示名称
+    display_names = {
+        "flight_agent": "✈️ 航班搜索",
+        "train_agent": "🚄 铁路搜索",
+        "hotel_agent": "🏨 酒店推荐",
+        "attraction_agent": "🎯 景点推荐",
+        "weather_agent": "🌤️ 天气分析",
+        "local_expert": "📍 本地专家",
+        "budget_optimizer": "💰 预算分析",
+        "itinerary_planner": "📅 行程规划",
+        "collector": "📊 结果汇总",
+        "summarizer": "📝 方案总结",
+    }
+
+    lines = ["#### 🤖 Agent 执行状态\n"]
+    for agent_name, state in sorted(agent_states.items()):
+        display = display_names.get(agent_name, agent_name)
+        icon = state.get("icon", "⏳")
+        msg = state.get("message", "")
+        t = state.get("time", "")
+
+        # 截断过长消息
+        if len(msg) > 40:
+            msg = msg[:37] + "..."
+
+        lines.append(f"| {icon} | **{display}** | {msg} | _{t}_ |")
+
+    placeholder.markdown("\n".join(lines))
+
+
+def _render_manual_check_buttons(task_id: str):
+    """渲染超时后的手动检查按钮。"""
+    col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("🔄 手动检查状态"):
+        if st.button("🔄 手动检查状态", key="manual_check"):
             final_status = get_planning_status(task_id)
             if final_status:
                 if final_status.get("status") == "completed":
                     st.success("🎉 任务已完成！")
-                    return final_status.get("result")
+                    st.rerun()
                 else:
-                    st.info(f"任务状态: {final_status.get('status')} - {final_status.get('message')}")
-            else:
-                st.error("无法获取任务状态")
-
+                    st.info(
+                        f"状态: {final_status.get('status')} - "
+                        f"{final_status.get('message')}"
+                    )
     with col2:
-        if st.button("📥 尝试下载结果"):
+        if st.button("📥 尝试下载结果", key="manual_download"):
             try:
                 download_url = f"{API_BASE_URL}/download/{task_id}"
                 response = requests.get(download_url, timeout=10)
@@ -788,14 +1004,23 @@ def display_planning_progress(task_id: str):
                         label="下载规划结果",
                         data=response.content,
                         file_name=f"travel_plan_{task_id[:8]}.json",
-                        mime="application/json"
+                        mime="application/json",
                     )
                 else:
                     st.warning("结果文件暂不可用")
             except Exception as e:
                 st.error(f"下载失败: {str(e)}")
-
-    return None
+    with col3:
+        if st.button("❌ 取消任务", key="manual_cancel"):
+            try:
+                cancel_url = f"{API_BASE_URL}/tasks/{task_id}/cancel"
+                response = requests.post(cancel_url, timeout=10)
+                if response.status_code == 200:
+                    st.warning("⚠️ 任务已取消")
+                else:
+                    st.error(f"取消失败: {response.text}")
+            except Exception as e:
+                st.error(f"取消请求失败: {str(e)}")
 
 def generate_markdown_report(result: Dict[str, Any], task_id: str) -> str:
     """生成Markdown格式的旅行规划报告"""
