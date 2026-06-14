@@ -1,0 +1,28 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and local analysis tools
+.idea/
+.vscode/
+.understand-anything/
+
+# Runtime data
+tasks_state.json
+results/
+backend/results/
+backend/logs/
+*.log
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
