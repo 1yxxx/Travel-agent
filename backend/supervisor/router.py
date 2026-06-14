@@ -275,15 +275,23 @@ def build_subtasks(
     duration = facts.get("duration", 3)
     interests = "、".join(facts.get("interests", [])) or "综合体验"
 
+    # 日期信息用于往返查询
+    start_date = facts.get("start_date") or ""
+    end_date = facts.get("end_date") or ""
+
     # 各 Agent 的指令模板
     instructions = {
         "flight_agent": (
-            f"查询从{departure}到{destination}的可用航班。"
-            f"请比较直飞/中转方案、价格区间和航班时刻，给出推荐选择依据。"
+            f"查询往返航班：\n"
+            f"1. 去程：{departure} → {destination}，日期 {start_date or '待确认'}\n"
+            f"2. 返程：{destination} → {departure}，日期 {end_date or '待确认'}\n"
+            f"请分别列出去程和返程的航班方案，比较直飞/中转、价格和时刻。"
         ),
         "train_agent": (
-            f"查询从{departure}到{destination}的高铁/动车/火车。"
-            f"请比较不同车次的时间、价格和舒适度，给出推荐选择依据。"
+            f"查询往返高铁/火车：\n"
+            f"1. 去程：{departure} → {destination}，日期 {start_date or '待确认'}\n"
+            f"2. 返程：{destination} → {departure}，日期 {end_date or '待确认'}\n"
+            f"请分别列出去程和返程的车次方案，比较时间、价格和舒适度。"
         ),
         "hotel_agent": (
             f"查询{destination}的住宿选项。"

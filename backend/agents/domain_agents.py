@@ -349,7 +349,7 @@ class FlightAgent(BaseDomainAgent):
     """
     航班搜索 Agent。
 
-    职责：查询出发地到目的地的可用航班，比较直飞/中转方案和价格。
+    职责：查询往返航班，比较直飞/中转方案和价格。
 
     工具：search_flights（聚合数据 API）
     """
@@ -358,17 +358,32 @@ class FlightAgent(BaseDomainAgent):
     tool_module = "flight_tool"
     tool_name = "search_flights"
 
-    def build_tool_params(self, facts: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        构建航班搜索参数。
+    def invoke_tool(self, params: Dict[str, Any], facts: Dict[str, Any]) -> Any:
+        """查询往返航班（去程 + 返程）。"""
+        tool = self._load_tool()
+        departure = facts.get("departure", "")
+        destination = facts.get("destination", "")
+        start_date = facts.get("start_date", "")
+        end_date = facts.get("end_date", "")
 
-        提取 departure（出发地）、arrival（目的地）、date（出发日期）。
-        """
-        return {
-            "departure": facts.get("departure", ""),
-            "arrival": facts.get("destination", ""),
-            "date": facts.get("start_date", ""),
-        }
+        results = []
+
+        # 去程
+        out = tool.invoke({"departure": departure, "arrival": destination, "date": start_date})
+        results.append(out)
+
+        # 返程（如果有返程日期）
+        if end_date:
+            back = tool.invoke({"departure": destination, "arrival": departure, "date": end_date})
+            results.append(back)
+
+        # 合并结果
+        from tools.result import ToolResult
+        parts = []
+        for r in results:
+            if isinstance(r, ToolResult):
+                parts.append(r.message)
+        return ToolResult.success("\n\n".join(parts), source="juhe")
 
 
 # ======================== 铁路 Agent ========================
@@ -377,7 +392,7 @@ class TrainAgent(BaseDomainAgent):
     """
     铁路搜索 Agent。
 
-    职责：查询出发地到目的地的高铁/动车/火车，比较时间和价格。
+    职责：查询往返高铁/动车/火车，比较时间和价格。
 
     工具：search_trains（聚合数据 API）
     """
@@ -386,17 +401,31 @@ class TrainAgent(BaseDomainAgent):
     tool_module = "train_tool"
     tool_name = "search_trains"
 
-    def build_tool_params(self, facts: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        构建铁路搜索参数。
+    def invoke_tool(self, params: Dict[str, Any], facts: Dict[str, Any]) -> Any:
+        """查询往返火车（去程 + 返程）。"""
+        tool = self._load_tool()
+        departure = facts.get("departure", "")
+        destination = facts.get("destination", "")
+        start_date = facts.get("start_date", "")
+        end_date = facts.get("end_date", "")
 
-        提取 departure（出发地）、arrival（目的地）、date（出发日期）。
-        """
-        return {
-            "departure": facts.get("departure", ""),
-            "arrival": facts.get("destination", ""),
-            "date": facts.get("start_date", ""),
-        }
+        results = []
+
+        # 去程
+        out = tool.invoke({"departure": departure, "arrival": destination, "date": start_date})
+        results.append(out)
+
+        # 返程
+        if end_date:
+            back = tool.invoke({"departure": destination, "arrival": departure, "date": end_date})
+            results.append(back)
+
+        from tools.result import ToolResult
+        parts = []
+        for r in results:
+            if isinstance(r, ToolResult):
+                parts.append(r.message)
+        return ToolResult.success("\n\n".join(parts), source="juhe")
 
 
 # ======================== 酒店 Agent ========================

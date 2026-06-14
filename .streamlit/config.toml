@@ -1,16 +1,15 @@
 [theme]
-base = "light"
+# LX_SkyRoam 风格 — 深蓝黑 + 蓝紫渐变
 primaryColor = "#6366f1"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f8fafc"
-textColor = "#1e293b"
-borderColor = "#e2e8f0"
-
-font = "sans-serif"
+backgroundColor = "#0f0f1e"
+secondaryBackgroundColor = "rgba(255,255,255,0.06)"
+textColor = "#e8e8f0"
+font = "sans serif"
 
 [server]
-port = 8501
-enableCORS = false
+headless = true
+runOnSave = false
+maxUploadSize = 10
 
 [browser]
 gatherUsageStats = false

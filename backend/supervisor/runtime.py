@@ -306,34 +306,27 @@ class SupervisorTravelPlanner:
     # ======================== 阶段 5：行程生成 ========================
 
     def _itinerary(self, state: SupervisorState) -> Dict[str, Any]:
-        """阶段 5：生成逐日行程框架（进度 84%）。"""
+        """阶段 5：基于 Agent 真实数据生成逐日行程（进度 84%）。"""
         facts = state["extracted_facts"]
         duration = int(facts.get("duration", 3))
         destination = facts.get("destination", "目的地")
         sections = state.get("collector_output", {}).get("sections", {})
 
-        lines = [
-            f"## {destination} {duration}日行程框架",
-            f"- 规划依据：{'、'.join(sections) or '通用规划信息'}",
-            "- 原则：同区域聚合、减少折返、每天保留机动时段。",
-            "",
-        ]
-        for day in range(1, duration + 1):
-            if day == 1:
-                focus = "抵达、入住与目的地核心区域适应"
-            elif day == duration:
-                focus = "补充体验、伴手礼与返程缓冲"
-            else:
-                focus = "核心景点与兴趣主题深度体验"
-            lines.extend([
-                f"### 第 {day} 天",
-                f"- 上午：{focus}",
-                "- 下午：安排同片区候选景点，结合天气和预约情况调整。",
-                "- 晚上：本地餐饮或休闲活动，预留返回住宿地时间。",
-                "",
-            ])
+        # 收集 Agent 数据作为上下文
+        agent_context_parts = []
+        for name, content in sections.items():
+            agent_context_parts.append(f"【{name}】\n{content[:1200]}")
 
-        itinerary_output = "\n".join(lines).strip()
+        agent_context = "\n\n".join(agent_context_parts) if agent_context_parts else "（暂无 Agent 数据）"
+
+        # 尝试用 LLM 生成行程
+        itinerary_output = self._generate_itinerary_with_llm(
+            destination=destination,
+            duration=duration,
+            agent_context=agent_context,
+            interests="、".join(facts.get("interests", [])),
+        )
+
         self._emit("itinerary_completed", "逐日行程整合完成。", 84, agent="itinerary_planner")
 
         now = datetime.now().isoformat()
@@ -356,6 +349,86 @@ class SupervisorTravelPlanner:
                 },
             },
         }
+
+    def _generate_itinerary_with_llm(
+        self,
+        destination: str,
+        duration: int,
+        agent_context: str,
+        interests: str,
+    ) -> str:
+        """使用 LLM 基于 Agent 真实数据生成每日行程。"""
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.messages import HumanMessage, SystemMessage
+            from core.config import settings
+
+            llm = ChatOpenAI(
+                model=settings.openai_model,
+                base_url=settings.openai_base_url,
+                api_key=settings.openai_api_key,
+                temperature=0.7,
+                timeout=60,
+            )
+
+            system_prompt = f"""你是"旅小智"的行程规划师。你的任务是基于以下 Agent 收集的真实数据，为{destination}生成一份{duration}天的详细旅行行程。
+
+## 规则
+1. 每一天必须包含：上午/下午/晚上三个时段的具体安排
+2. 必须引用 Agent 数据中的具体景点名、酒店名、航班/车次、天气信息
+3. 根据天气调整建议（雨天推荐室内、晴天推荐户外）
+4. 景点按地理位置聚合，同一天安排相近的景点，减少折返
+5. 每天保留 1-2 小时机动时间
+6. 第一天考虑抵达时间，最后一天考虑返程
+7. 用户兴趣：{interests or '综合体验'}
+8. 输出格式为 Markdown，每天用 ### 标题"""
+
+            user_prompt = f"""请基于以下 Agent 真实数据，为{destination}生成{duration}天详细行程：
+
+{agent_context}
+
+请生成完整的 Markdown 行程方案。"""
+
+            response = llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
+            return response.content.strip()
+
+        except Exception as e:
+            # LLM 不可用时回退到模板
+            return self._generate_itinerary_template(destination, duration, agent_context)
+
+    def _generate_itinerary_template(
+        self,
+        destination: str,
+        duration: int,
+        agent_context: str,
+    ) -> str:
+        """LLM 不可用时的模板兜底。"""
+        lines = [
+            f"## {destination} {duration}日行程框架",
+            f"- 规划依据：以下 Agent 数据",
+            "- 原则：同区域聚合、减少折返、每天保留机动时段。",
+            "",
+            agent_context[:1500] if agent_context else "",
+            "",
+        ]
+        for day in range(1, duration + 1):
+            if day == 1:
+                focus = "抵达、入住与目的地核心区域适应"
+            elif day == duration:
+                focus = "补充体验、伴手礼与返程缓冲"
+            else:
+                focus = "核心景点与兴趣主题深度体验"
+            lines.extend([
+                f"### 第 {day} 天",
+                f"- 上午：{focus}",
+                "- 下午：安排同片区候选景点，结合天气和预约情况调整。",
+                "- 晚上：本地餐饮或休闲活动，预留返回住宿地时间。",
+                "",
+            ])
+        return "\n".join(lines).strip()
 
     # ======================== 阶段 6：质量反思 ========================
 
