@@ -196,7 +196,7 @@ class SupervisorRuntimeTests(unittest.TestCase):
             "hotel_agent": FakeAgent("hotel_agent"),
             "weather_agent": FakeAgent("weather_agent"),
         }
-        planner = SupervisorTravelPlanner(registry, use_langgraph=False)
+        planner = SupervisorTravelPlanner(registry)
         events = []
         result = planner.run_travel_planning(
             {
@@ -229,7 +229,7 @@ class SupervisorRuntimeTests(unittest.TestCase):
             "hotel_agent": FakeAgent("hotel_agent"),
             "weather_agent": FakeAgent("weather_agent", fail=True),
         }
-        planner = SupervisorTravelPlanner(registry, use_langgraph=False)
+        planner = SupervisorTravelPlanner(registry)
         result = planner.run_travel_planning({
             "destination": "广州",
             "travel_dates": "2026-09-01 至 2026-09-03",
@@ -250,7 +250,7 @@ class SupervisorRuntimeTests(unittest.TestCase):
             "hotel_agent": FakeAgent("hotel_agent"),
             "weather_agent": FakeAgent("weather_agent", degraded=True),
         }
-        planner = SupervisorTravelPlanner(registry, use_langgraph=False)
+        planner = SupervisorTravelPlanner(registry)
         result = planner.run_travel_planning({
             "destination": "成都",
             "travel_dates": "2026-09-01 至 2026-09-03",
@@ -273,7 +273,7 @@ class SupervisorRuntimeTests(unittest.TestCase):
             "hotel_agent": FakeAgent("hotel_agent"),
             "weather_agent": FakeAgent("weather_agent"),
         }
-        planner = SupervisorTravelPlanner(registry, use_langgraph=False)
+        planner = SupervisorTravelPlanner(registry)
         events = []
         planner.run_travel_planning(
             {
