@@ -50,9 +50,13 @@ class Settings(BaseSettings):
         "",
         description="高德地图 Web API Key（酒店/景点 POI 搜索）",
     )
-    tianxing_api_key: str = Field(
+    juhe_flight_key: str = Field(
         "",
-        description="天行数据 API Key（航班/高铁查询）",
+        description="聚合数据 API Key - 航班订票查询",
+    )
+    juhe_train_key: str = Field(
+        "",
+        description="聚合数据 API Key - 火车订票查询",
     )
     qweather_api_key: str = Field(
         "",
@@ -109,6 +113,22 @@ class Settings(BaseSettings):
         30,
         ge=5,
         description="子 Agent 超时时间（秒）",
+    )
+
+    # ======================== Chroma 本地知识库 ========================
+    chroma_persist_dir: str = Field(
+        "./chroma_data",
+        description="本地 ChromaDB 数据存储目录",
+    )
+    chroma_collection: str = Field(
+        "travel_local_expert_knowledge",
+        description="Chroma Collection 名称",
+    )
+    chroma_top_k: int = Field(
+        4,
+        ge=1,
+        le=10,
+        description="RAG 检索返回数量",
     )
 
     # ======================== 预算配置 ========================

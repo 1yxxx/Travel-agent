@@ -119,8 +119,8 @@ class ToolResult:
         使用示例：
             return ToolResult.failed(
                 "无法查询航班信息",
-                error="tianxing_api_timeout",
-                source="tianxing",
+                error="juhe_api_timeout",
+                source="juhe",
             )
         """
         return cls("failed", message, error=error, source=source)

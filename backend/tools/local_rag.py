@@ -1,9 +1,5 @@
 """
-本地知识库 RAG 检索 —— 基于 Chroma 云服务的向量搜索。
-
-什么是 RAG（Retrieval-Augmented Generation，检索增强生成）？
-- 简单说：先搜索相关文档，再把搜索结果喂给 LLM，让 LLM 基于真实知识回答
-- 好处：LLM 不会"胡说八道"，回答基于本地知识库的事实
+本地知识库 RAG 检索 —— 基于 Chroma 本地向量数据库。
 
 工作流程：
 1. 用户问："成都有什么小众景点？"
@@ -11,14 +7,14 @@
 3. 把搜索结果格式化后返回给 LocalExpertAgent
 4. Agent 基于这些真实知识生成回答
 
-为什么用 Chroma？
-- 轻量级向量数据库，适合本地知识检索
-- 支持云服务模式（Chroma Cloud），不需要自己部署服务器
-- 支持按城市过滤（city 字段），避免"问成都却搜到北京"的跨城市污染
+两种模式：
+- 本地模式（默认）：使用 PersistentClient + sentence-transformers 嵌入
+  数据存储在 CHROMA_PERSIST_DIR 目录（默认 ./chroma_data）
+- Chroma Cloud（可选）：设置 CHROMA_API_KEY/TENANT/DATABASE 切换
 
-Python 新手提示：
-- @lru_cache 是缓存装饰器，函数结果会被缓存，下次调用直接返回缓存值
-- maxsize=1 表示只缓存最近一次的结果（因为 Chroma 客户端只需要创建一次）
+特性：
+- 支持按城市过滤（city 字段），避免"问成都却搜到北京"的跨城市污染
+- @lru_cache 缓存 Chroma 客户端，避免重复连接
 """
 
 from __future__ import annotations
@@ -26,9 +22,11 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
+from chromadb.config import Settings as ChromaSettings
 
 # 创建本模块专用的日志记录器
 logger = logging.getLogger("local_rag")
@@ -100,19 +98,25 @@ def get_default_top_k() -> int:
     return max(1, min(top_k, 10))
 
 
-def _required_env(name: str) -> str:
-    """
-    读取必需的环境变量，如果缺失则抛出异常。
+def _is_chroma_cloud_configured() -> bool:
+    """检查是否配置了 Chroma Cloud（三个环境变量都非空）。"""
+    return bool(
+        os.getenv("CHROMA_API_KEY", "").strip()
+        and os.getenv("CHROMA_TENANT", "").strip()
+        and os.getenv("CHROMA_DATABASE", "").strip()
+    )
 
-    Chroma Cloud 需要三个环境变量：
-    - CHROMA_API_KEY：API 密钥
-    - CHROMA_TENANT：租户标识
-    - CHROMA_DATABASE：数据库名称
-    """
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ValueError(f"缺少必需的环境变量: {name}")
-    return value
+
+def _get_persist_dir() -> str:
+    """获取本地 ChromaDB 数据存储目录。"""
+    persist_dir = os.getenv("CHROMA_PERSIST_DIR", "./chroma_data").strip()
+    # 相对于项目根目录
+    if not os.path.isabs(persist_dir):
+        # 从 backend/tools/ 向上两级到项目根
+        project_root = Path(__file__).resolve().parents[2]
+        persist_dir = str(project_root / persist_dir)
+    Path(persist_dir).mkdir(parents=True, exist_ok=True)
+    return persist_dir
 
 
 # ======================== Chroma 客户端 ========================
@@ -120,19 +124,34 @@ def _required_env(name: str) -> str:
 @lru_cache(maxsize=1)
 def get_chroma_client() -> chromadb.api.ClientAPI:
     """
-    获取 Chroma Cloud 客户端（单例模式）。
+    获取 Chroma 客户端（单例模式）。
+
+    优先使用本地 ChromaDB（PersistentClient），无需任何 API Key。
+    如果配置了 Chroma Cloud（三个环境变量都非空），则切换到 CloudClient。
 
     @lru_cache(maxsize=1) 的作用：
     - 第一次调用时创建客户端，后续调用直接返回缓存的客户端
     - 避免每次查询都重新建立连接
 
-    需要三个环境变量：CHROMA_API_KEY、CHROMA_TENANT、CHROMA_DATABASE
+    本地模式特性：
+    - 自动下载 sentence-transformers/all-MiniLM-L6-v2 嵌入模型（首次运行）
+    - 数据持久化到 CHROMA_PERSIST_DIR（默认 ./chroma_data/）
     """
-    api_key = _required_env("CHROMA_API_KEY")
-    tenant = _required_env("CHROMA_TENANT")
-    database = _required_env("CHROMA_DATABASE")
-    # CloudClient 连接到 Chroma 云服务（不需要本地部署）
-    return chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
+    # 优先使用 Chroma Cloud
+    if _is_chroma_cloud_configured():
+        api_key = os.getenv("CHROMA_API_KEY", "").strip()
+        tenant = os.getenv("CHROMA_TENANT", "").strip()
+        database = os.getenv("CHROMA_DATABASE", "").strip()
+        logger.info("使用 Chroma Cloud 模式: tenant=%s, database=%s", tenant, database)
+        return chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
+
+    # 默认使用本地 ChromaDB
+    persist_dir = _get_persist_dir()
+    logger.info("使用本地 ChromaDB 模式: persist_dir=%s", persist_dir)
+    return chromadb.PersistentClient(
+        path=persist_dir,
+        settings=ChromaSettings(anonymized_telemetry=False),
+    )
 
 
 # ======================== 查询结果处理 ========================
@@ -215,7 +234,7 @@ def query_local_knowledge(
     """
     # 获取 Chroma 客户端和集合
     client = get_chroma_client()
-    collection = client.get_collection(name=get_collection_name())
+    collection = client.get_or_create_collection(name=get_collection_name())
 
     # 确定返回数量
     n_results = top_k if top_k is not None else get_default_top_k()
@@ -225,17 +244,22 @@ def query_local_knowledge(
     city = normalize_city(destination)
     where = {"city": city} if city else None  # 有城市则过滤，无城市则全局搜索
 
-    # 执行向量相似度搜索
-    result = collection.query(
-        query_texts=[query],         # 查询文本
-        n_results=n_results,         # 返回数量
-        where=where,                 # 过滤条件（按城市）
-        include=["documents", "metadatas", "distances"],  # 需要返回的字段
-    )
+    try:
+        # 执行向量相似度搜索
+        result = collection.query(
+            query_texts=[query],         # 查询文本
+            n_results=n_results,         # 返回数量
+            where=where,                 # 过滤条件（按城市）
+            include=["documents", "metadatas", "distances"],  # 需要返回的字段
+        )
 
-    # 展平结果并返回
-    hits = _flatten_query_result(result)
-    return hits
+        # 展平结果并返回
+        hits = _flatten_query_result(result)
+        return hits
+
+    except Exception as e:
+        logger.warning("Chroma 查询失败: %s (collection 可能为空，请先运行 ingest 脚本)", str(e))
+        return []
 
 
 # ======================== 结果格式化 ========================

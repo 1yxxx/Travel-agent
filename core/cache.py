@@ -21,8 +21,8 @@ cache = Cache(str(_cache_dir))
 PROVIDER_TTL = {
     "amap_hotel": 6 * 3600,        # 高德酒店: 6h
     "amap_attraction": 24 * 3600,  # 高德景点: 24h
-    "tianxing_flight": 24 * 3600,  # 天行航班: 24h
-    "tianxing_train": 24 * 3600,   # 天行高铁: 24h
+    "juhe_flight": 24 * 3600,      # 聚合航班: 24h
+    "juhe_train": 24 * 3600,       # 聚合高铁: 24h
     "qweather": 1 * 3600,          # 和风天气: 1h
 }
 

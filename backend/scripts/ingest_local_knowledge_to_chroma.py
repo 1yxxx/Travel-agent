@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """
-Chunk markdown files in knowledge-rag and upload them to Chroma Cloud.
+将 SimpleExample-knowledge-rag/ 目录下的 Markdown 知识文件导入 Chroma 向量数据库。
 
-Usage example:
-  python backend/scripts/ingest_local_knowledge_to_chroma.py \
-    --knowledge-dir ../knowledge-rag \
-    --api-key <CHROMA_API_KEY> \
-    --tenant <CHROMA_TENANT> \
-    --database multi-agent \
-    --collection travel_local_expert_knowledge
+支持两种模式：
+- 本地模式（默认）：存储在 chroma_data/ 目录，无需 API Key
+- Chroma Cloud（可选）：需要 CHROMA_API_KEY/TENANT/DATABASE
+
+用法:
+  # 本地模式（默认）
+  python backend/scripts/ingest_local_knowledge_to_chroma.py
+
+  # Chroma Cloud 模式
+  python backend/scripts/ingest_local_knowledge_to_chroma.py \\
+    --api-key <CHROMA_API_KEY> --tenant <TENANT> --database <DB>
+
+  # 重建知识库
+  python backend/scripts/ingest_local_knowledge_to_chroma.py --recreate
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import chromadb
+from chromadb.config import Settings as ChromaSettings
 
 
 CITY_ALIASES = {
@@ -127,75 +135,106 @@ def build_documents(
     return ids, docs, metas, sorted(set(source_files))
 
 
-def get_required(value: str, env_name: str) -> str:
-    if value:
-        return value
-    env_value = os.getenv(env_name, "").strip()
-    if not env_value:
-        raise ValueError(f"Missing required parameter: --{env_name.lower()} or {env_name}")
-    return env_value
+def _is_cloud_mode() -> bool:
+    """检查是否配置了 Chroma Cloud 模式。"""
+    return bool(
+        os.getenv("CHROMA_API_KEY", "").strip()
+        and os.getenv("CHROMA_TENANT", "").strip()
+        and os.getenv("CHROMA_DATABASE", "").strip()
+    )
+
+
+def _get_local_client(persist_dir: str) -> chromadb.api.ClientAPI:
+    """获取本地 ChromaDB PersistentClient。"""
+    path = Path(persist_dir).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return chromadb.PersistentClient(
+        path=str(path),
+        settings=ChromaSettings(anonymized_telemetry=False),
+    )
+
+
+def _get_cloud_client() -> chromadb.api.ClientAPI:
+    """获取 Chroma Cloud 客户端。"""
+    api_key = os.getenv("CHROMA_API_KEY", "").strip()
+    tenant = os.getenv("CHROMA_TENANT", "").strip()
+    database = os.getenv("CHROMA_DATABASE", "").strip()
+    return chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest local markdown knowledge into Chroma Cloud.")
+    parser = argparse.ArgumentParser(
+        description="将 Markdown 知识文件导入 Chroma 向量数据库（默认本地模式）。"
+    )
     parser.add_argument(
         "--knowledge-dir",
-        default=str(Path(__file__).resolve().parents[2] / "knowledge-rag"),
-        help="Directory containing city markdown files.",
+        default=str(
+            Path(__file__).resolve().parents[2] / "SimpleExample-knowledge-rag"
+        ),
+        help="Markdown 城市知识文件目录。",
     )
-    parser.add_argument("--api-key", default="", help="Chroma Cloud API key.")
-    parser.add_argument("--tenant", default="", help="Chroma Cloud tenant id.")
-    parser.add_argument("--database", default="", help="Chroma Cloud database name.")
+    parser.add_argument(
+        "--persist-dir",
+        default=os.getenv("CHROMA_PERSIST_DIR", "./chroma_data"),
+        help="本地 ChromaDB 数据存储目录（默认 ./chroma_data）。",
+    )
     parser.add_argument(
         "--collection",
         default=os.getenv("CHROMA_COLLECTION", "travel_local_expert_knowledge"),
-        help="Target Chroma collection.",
+        help="Chroma Collection 名称。",
     )
-    parser.add_argument("--chunk-size", type=int, default=900, help="Chunk size in characters.")
-    parser.add_argument("--chunk-overlap", type=int, default=120, help="Chunk overlap in characters.")
-    parser.add_argument("--batch-size", type=int, default=64, help="Upload batch size.")
+    parser.add_argument("--chunk-size", type=int, default=900, help="分块大小（字符数）。")
+    parser.add_argument("--chunk-overlap", type=int, default=120, help="分块重叠（字符数）。")
+    parser.add_argument("--batch-size", type=int, default=64, help="批量上传大小。")
     parser.add_argument(
         "--recreate",
         action="store_true",
-        help="Delete and recreate the target collection before ingesting.",
+        help="删除并重建目标 Collection。",
     )
     args = parser.parse_args()
 
-    api_key = get_required(args.api_key.strip(), "CHROMA_API_KEY")
-    tenant = get_required(args.tenant.strip(), "CHROMA_TENANT")
-    database = get_required(args.database.strip(), "CHROMA_DATABASE")
-
+    # 解析知识文件目录
     knowledge_dir = Path(args.knowledge_dir).resolve()
     if not knowledge_dir.exists():
-        raise FileNotFoundError(f"knowledge directory does not exist: {knowledge_dir}")
+        raise FileNotFoundError(f"知识文件目录不存在: {knowledge_dir}")
 
+    # 分块
     ids, docs, metas, source_files = build_documents(
         knowledge_dir=knowledge_dir,
         chunk_size=max(200, args.chunk_size),
         chunk_overlap=max(0, args.chunk_overlap),
     )
-    print(f"Prepared {len(docs)} chunks from {len(source_files)} markdown files.")
+    print(f"已准备 {len(docs)} 个分块 (来自 {len(source_files)} 个文件)")
 
-    client = chromadb.CloudClient(api_key=api_key, tenant=tenant, database=database)
+    # 选择 Chroma 客户端
+    if _is_cloud_mode():
+        print("→ 使用 Chroma Cloud 模式")
+        client = _get_cloud_client()
+    else:
+        persist_path = str(Path(args.persist_dir).resolve())
+        print(f"→ 使用本地 ChromaDB 模式 (数据目录: {persist_path})")
+        client = _get_local_client(persist_path)
+
     collection_name = args.collection.strip()
 
+    # 可选：重建 Collection
     if args.recreate:
         try:
             client.delete_collection(collection_name)
-            print(f"Deleted existing collection: {collection_name}")
+            print(f"已删除旧 Collection: {collection_name}")
         except Exception:
             pass
 
     collection = client.get_or_create_collection(name=collection_name)
 
-    # Remove old chunks for these source files to avoid duplicates.
+    # 清理旧数据（按 source_file 去重）
     for source_file in source_files:
         try:
             collection.delete(where={"source_file": source_file})
         except Exception:
-            # Ignore "no existing records" style failures.
             pass
 
+    # 批量插入
     batch_size = max(1, args.batch_size)
     for i in range(0, len(ids), batch_size):
         end = i + batch_size
@@ -204,10 +243,10 @@ def main() -> None:
             documents=docs[i:end],
             metadatas=metas[i:end],
         )
-        print(f"Uploaded chunks: {i} -> {min(end, len(ids))}")
+        print(f"已上传分块: {i} → {min(end, len(ids))}")
 
     total_count = collection.count()
-    print(f"Done. Collection '{collection_name}' now has {total_count} records.")
+    print(f"✅ 完成！Collection '{collection_name}' 现有 {total_count} 条记录。")
 
 
 if __name__ == "__main__":

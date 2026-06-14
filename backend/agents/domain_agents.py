@@ -350,7 +350,7 @@ class FlightAgent(BaseDomainAgent):
 
     职责：查询出发地到目的地的可用航班，比较直飞/中转方案和价格。
 
-    工具：search_flights（天行数据 API）
+    工具：search_flights（聚合数据 API）
     """
 
     name = "flight_agent"
@@ -378,7 +378,7 @@ class TrainAgent(BaseDomainAgent):
 
     职责：查询出发地到目的地的高铁/动车/火车，比较时间和价格。
 
-    工具：search_trains（天行数据 API）
+    工具：search_trains（聚合数据 API）
     """
 
     name = "train_agent"

@@ -1,13 +1,11 @@
 """
-航班搜索工具 —— 封装天行数据 API。
-
-LangChain @tool，供 Agent 通过 Function Calling 调用。
+航班搜索工具 —— 封装聚合数据 API。
 """
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from core.logging import logger
 from core.config import settings
-from apis.providers.tianxing import TianxingFlightProvider
+from apis.providers.juhe import JuheFlightProvider
 from backend.tools.result import ToolResult
 
 
@@ -24,14 +22,14 @@ def search_flights(departure: str, arrival: str, date: str) -> ToolResult:
     搜索国内航班信息。输入出发城市、到达城市和日期，返回航班列表。
     如果没有 API Key 或查询无结果，返回友好提示。
     """
-    if not settings.tianxing_api_key:
+    if not settings.juhe_flight_key:
         return ToolResult.degraded(
-            f"[航班查询] 天行数据 API Key 未配置，无法查询 {departure} → {arrival} 的航班",
-            error="tianxing_api_key_missing",
-            source="tianxing",
+            f"[航班查询] 聚合数据航班 API Key 未配置，无法查询 {departure} → {arrival} 的航班",
+            error="juhe_flight_key_missing",
+            source="juhe",
         )
 
-    provider = TianxingFlightProvider(settings.tianxing_api_key)
+    provider = JuheFlightProvider(settings.juhe_flight_key)
     try:
         results = provider.search({"departure": departure, "arrival": arrival, "date": date})
     except Exception as e:
@@ -39,21 +37,23 @@ def search_flights(departure: str, arrival: str, date: str) -> ToolResult:
         return ToolResult.degraded(
             f"[航班查询暂时不可用] {departure} → {arrival}: 请稍后重试",
             error=str(e),
-            source="tianxing",
+            source="juhe",
         )
 
     if not results:
         return ToolResult.degraded(
             f"未找到 {date} 从 {departure} 到 {arrival} 的航班",
             error="no_flight_results",
-            source="tianxing",
+            source="juhe",
         )
 
     lines = [f"**{departure} → {arrival} 航班 ({date})**"]
     for f in results[:5]:
+        transfer = "直飞" if f.get("transfer_num") == 1 else f"中转{f.get('transfer_num', '?')}次"
         lines.append(
-            f"- {f['airline']} {f['flight_no']} | "
+            f"- {f['airline']} {f['flight_no']} ({transfer}) | "
             f"{f['dep_time']} → {f['arr_time']} | "
-            f"¥{f.get('price', 'N/A')}"
+            f"¥{f.get('price', 'N/A')} | "
+            f"{f.get('dep_airport', '')} → {f.get('arr_airport', '')}"
         )
-    return ToolResult.success("\n".join(lines), data=results[:5], source="tianxing")
+    return ToolResult.success("\n".join(lines), data=results[:5], source="juhe")
