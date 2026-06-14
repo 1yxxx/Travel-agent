@@ -495,7 +495,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_杭州_20260615_012731.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_杭州_20260615_012731.json",
     "result_markdown_file": "杭州-1人-旅行规划指南-20260615_012731.md",
@@ -997,7 +997,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_杭州_20260615_013058.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_杭州_20260615_013058.json",
     "result_markdown_file": "杭州-1人-旅行规划指南-20260615_013058.md",
@@ -1499,7 +1499,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_杭州_20260615_013211.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_杭州_20260615_013211.json",
     "result_markdown_file": "杭州-1人-旅行规划指南-20260615_013211.md",
@@ -1948,7 +1948,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_013730.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_013730.json",
     "result_markdown_file": "成都-1人-旅行规划指南-20260615_013730.md",
@@ -2397,7 +2397,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_013805.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_013805.json",
     "result_markdown_file": "成都-1人-旅行规划指南-20260615_013805.md",
@@ -2970,7 +2970,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_013939.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_013939.json",
     "result_markdown_file": "成都-1人-旅行规划指南-20260615_013939.md",
@@ -3543,7 +3543,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_014108.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_014108.json",
     "result_markdown_file": "成都-1人-旅行规划指南-20260615_014108.md",
@@ -4249,7 +4249,7 @@
         "all_expected_completed": false
       }
     },
-    "updated_at": "2026-06-15T02:21:31.860010",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_014112.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_014112.json",
     "result_markdown_file": "成都-1人-旅行规划指南-20260615_014112.md",
@@ -4997,7 +4997,7 @@
         "all_expected_completed": true
       }
     },
-    "updated_at": "2026-06-15T02:21:44.080386",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_022144.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_022144.json",
     "result_markdown_file": "成都-2人-旅行规划指南-20260615_022144.md",
@@ -5745,10 +5745,39 @@
         "all_expected_completed": true
       }
     },
-    "updated_at": "2026-06-15T02:22:55.493266",
+    "updated_at": "2026-06-15T02:58:33.062773",
     "result_file": "旅行计划_成都_20260615_022255.json",
     "result_path": "C:\\Users\\17133\\Documents\\TripAI\\backend\\results\\旅行计划_成都_20260615_022255.json",
     "result_markdown_file": "成都-2人-旅行规划指南-20260615_022255.md",
     "result_markdown_path": "C:\\Users\\17133\\Documents\\TripAI\\results\\成都-2人-旅行规划指南-20260615_022255.md"
+  },
+  "2544a4db-624c-4e4c-b940-d763b7eac5d4": {
+    "task_id": "2544a4db-624c-4e4c-b940-d763b7eac5d4",
+    "status": "started",
+    "progress": 0,
+    "current_agent": "系统初始化",
+    "message": "任务已创建，准备开始规划...",
+    "created_at": "2026-06-15T02:58:38.465431",
+    "request": {
+      "destination": "杭州",
+      "start_date": "2026-06-16",
+      "end_date": "2026-06-23",
+      "budget_range": "经济型 (300-800元/天)",
+      "group_size": 2,
+      "interests": [],
+      "departure": "成都",
+      "requested_capabilities": [],
+      "dietary_restrictions": "",
+      "activity_level": "适中",
+      "travel_style": "探索者",
+      "transportation_preference": "公共交通为主",
+      "accommodation_preference": "经济型酒店/青旅",
+      "special_occasion": "",
+      "special_requirements": "",
+      "currency": "CNY",
+      "duration": 8
+    },
+    "result": null,
+    "updated_at": "2026-06-15T02:58:38.465431"
   }
 }

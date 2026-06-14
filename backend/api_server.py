@@ -40,6 +40,9 @@ from supervisor.runtime import SupervisorTravelPlanner
 from agents.simple_travel_agent import SimpleTravelAgent
 from config.langgraph_config import langgraph_config as config
 from storage.persistence import PostgresResultStore, RedisStateStore
+from storage.chat_session import ChatSessionStore
+from supervisor.intent_router import IntentRouter
+from supervisor.delta_replanner import DeltaReplanner
 
 # Compatibility alias for legacy helper functions in this module.
 LangGraphTravelAgents = SupervisorTravelPlanner
@@ -68,6 +71,17 @@ def setup_api_logger():
 api_logger = setup_api_logger()
 REDIS_STATE_STORE = RedisStateStore(api_logger)
 POSTGRES_RESULT_STORE = PostgresResultStore(api_logger)
+SESSION_STORE = ChatSessionStore(logger=api_logger)
+
+# 初始化 IntentRouter 和 DeltaReplanner（延迟加载 LLM）
+def _build_llm_config():
+    return {
+        "model": config.OPENAI_MODEL,
+        "api_key": config.OPENAI_API_KEY,
+        "base_url": config.OPENAI_BASE_URL,
+    }
+
+INTENT_ROUTER = IntentRouter(_build_llm_config() if config.OPENAI_API_KEY else None)
 
 
 def _safe_filename_component(value: str, default: str = "unknown") -> str:
@@ -408,16 +422,23 @@ class PlanningStatus(BaseModel):
 
 class ChatRequest(BaseModel):
     """自然语言交互请求模型"""
-    message: str  # 用户的自然语言输入
-    
+    message: str
+    session_id: Optional[str] = None  # 已有会话 ID，为空则创建新会话
+
 class ChatResponse(BaseModel):
-    """自然语言交互响应模型"""
-    understood: bool  # 是否理解用户意图
-    extracted_info: Dict[str, Any]  # 提取的旅行信息
-    missing_info: list[str]  # 缺失的信息
-    clarification: str  # 需要澄清的问题
-    can_proceed: bool  # 是否可以直接创建规划任务
-    task_id: Optional[str] = None  # 如果可以直接创建，返回任务ID
+    """自然语言交互响应模型（增强版）"""
+    session_id: str
+    intent: str = "chat"  # provide_info | create_plan | modify_plan | chat
+    message: str = ""  # 人类可读回复
+    task_id: Optional[str] = None
+    extracted_facts: Dict[str, Any] = Field(default_factory=dict)
+    missing_fields: List[str] = Field(default_factory=list)
+    can_proceed: bool = False
+
+class RefineRequest(BaseModel):
+    """计划修改请求"""
+    feedback: str  # 自然语言修改意见
+    session_id: Optional[str] = None
 
 # --------------------------- 路由定义 ---------------------------
 @app.get("/")
@@ -447,15 +468,17 @@ async def root():
             "Itinerary Planner"
         ],
         "endpoints": {
-            "chat": "/chat - 自然语言交互",
+            "chat": "/chat - 多轮对话（支持上下文）",
             "plan": "/plan - 创建旅行规划",
             "status": "/status/{task_id} - 查询任务状态",
             "stream": "/stream/{task_id} - SSE 流式事件",
             "download": "/download/{task_id} - 下载结果",
+            "refine": "/tasks/{task_id}/refine - 修改计划（增量重规划）",
             "events": "/tasks/{task_id}/events - 查询事件列表",
             "retry": "/tasks/{task_id}/retry - 重试任务",
             "cancel": "/tasks/{task_id}/cancel - 取消任务",
             "tasks": "/tasks - 列出所有任务",
+            "sessions": "/sessions/{session_id} - 会话管理",
             "docs": "/docs - API文档"
         }
     }
@@ -1460,210 +1483,355 @@ async def simple_travel_plan(request: TravelRequest, background_tasks: Backgroun
 
 
 
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_ai(request: ChatRequest, background_tasks: BackgroundTasks):
     """
-    自然语言交互接口 - 旅小智智能对话
-    
-    支持用户使用自然语言描述旅行需求，AI 自动提取关键信息并创建规划任务。
-    
-    示例输入：
-    - "我想下周去北京玩3天，预算3000元，喜欢历史文化"
-    - "帮我规划一个杭州5日游，2个人，预算中等"
-    - "8月份去成都，想吃美食和看大熊猫"
+    自然语言交互接口 — 多轮对话增强版。
+
+    支持:
+    - 多轮对话上下文记忆
+    - 意图路由: provide_info / create_plan / modify_plan / chat
+    - 自动累积信息，条件满足时自动创建计划
+    - 对已有计划提出修改意见
     """
     try:
-        user_message = request.message
-        api_logger.info(f"收到自然语言请求: {user_message}")
-        
-        # 使用 LLM 解析用户意图
-        from langchain_openai import ChatOpenAI
-        
-        llm = ChatOpenAI(
-            model=config.OPENAI_MODEL,
-            api_key=config.OPENAI_API_KEY,
-            base_url=config.OPENAI_BASE_URL,
-            temperature=0.3
-        )
-        
-        # 构造提示词
-        system_prompt = """你是"旅小智"，一个专业的AI旅行规划助手。
-你的任务是从用户的自然语言描述中提取旅行规划的关键信息。
+        user_message = request.message.strip()
+        api_logger.info(f"收到消息: {user_message[:80]}... | session={request.session_id}")
 
-请从用户输入中提取以下信息（如果有的话）：
-1. departure: 出发城市（用户明确提到时提取）
-2. destination: 目的地城市
-3. start_date: 出发日期（格式：YYYY-MM-DD）
-4. end_date: 返回日期（格式：YYYY-MM-DD）
-5. duration: 旅行天数
-6. budget_range: 预算范围（经济型/中等预算/豪华型）
-7. group_size: 人数
-8. interests: 兴趣爱好列表（如：美食、历史、自然风光等）
+        # ── 获取或创建 Session ──
+        session = None
+        if request.session_id:
+            session = SESSION_STORE.get_session(request.session_id)
 
-请返回 JSON 格式，包含：
-- extracted: 提取到的信息字典
-- missing: 缺失的关键信息列表
-- confidence: 理解的置信度（0-1）
-- clarification: 需要用户澄清的问题（如果有）
+        if session is None:
+            session = SESSION_STORE.create_session()
 
-关键信息包括：destination（目的地）、时间信息（start_date/end_date/duration 至少一个）
+        # ── 记录用户消息 ──
+        session.add_message("user", user_message)
 
-如果用户没有提供具体日期，但提到了"下周"、"月底"、"国庆"等时间描述，请在 clarification 中询问具体日期。"""
-        
-        # 调用 LLM
-        from langchain_core.messages import HumanMessage, SystemMessage
-        
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"用户说：{user_message}\n\n今天是 {datetime.now().strftime('%Y年%m月%d日')}")
-        ]
-        
-        response = llm.invoke(messages)
-        
-        # 解析 LLM 响应
-        import json
-        import re
-        
-        # 尝试从响应中提取 JSON
-        response_text = response.content
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        
-        if json_match:
-            parsed_data = json.loads(json_match.group())
-        else:
-            # 如果没有找到JSON，返回错误
-            return ChatResponse(
-                understood=False,
-                extracted_info={},
-                missing_info=["所有信息"],
-                clarification="抱歉，我没有理解您的需求。能否请您详细描述一下您的旅行计划？比如：目的地、时间、预算等。",
-                can_proceed=False
-            )
-        
-        extracted = parsed_data.get("extracted", {})
-        missing = parsed_data.get("missing", [])
-        confidence = parsed_data.get("confidence", 0.5)
-        clarification_text = parsed_data.get("clarification", "")
-        
-        # 判断是否可以创建任务
-        has_destination = "destination" in extracted and extracted["destination"]
-        has_time_info = any(k in extracted for k in ["start_date", "end_date", "duration"])
-        
-        can_proceed = has_destination and has_time_info and confidence > 0.6
-        
-        # 如果可以创建任务，自动创建
+        # ── ReAct 意图路由 ──
+        analysis = INTENT_ROUTER.analyze(user_message, session)
+        intent = analysis.get("intent", "chat")
+        can_proceed = analysis.get("can_proceed", False)
+        missing_fields = analysis.get("missing_fields", [])
+        updated_facts = analysis.get("updated_facts", {})
+
+        api_logger.info(f"意图: {intent} | 可创建: {can_proceed} | 缺失: {missing_fields}")
+
+        # ── 根据意图执行 ──
         task_id = None
-        if can_proceed:
-            try:
-                # 补充默认值
-                travel_data = {
-                    "departure": extracted.get("departure", ""),
-                    "destination": extracted.get("destination", ""),
-                    "start_date": extracted.get("start_date", (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")),
-                    "end_date": extracted.get("end_date", ""),
-                    "budget_range": extracted.get("budget_range", "中等预算"),
-                    "group_size": int(extracted.get("group_size", 2)),
-                    "interests": extracted.get("interests", []),
-                    "dietary_restrictions": "",
-                    "activity_level": "适中",
-                    "travel_style": "探索者",
-                    "transportation_preference": "混合交通",
-                    "accommodation_preference": "酒店",
-                    "special_requirements": "",
-                    "currency": "CNY"
-                }
-                
-                # 处理日期
-                if not travel_data["end_date"] and "duration" in extracted:
-                    start_date_obj = datetime.strptime(travel_data["start_date"], "%Y-%m-%d")
-                    duration_days = int(extracted["duration"])
-                    end_date_obj = start_date_obj + timedelta(days=duration_days - 1)
-                    travel_data["end_date"] = end_date_obj.strftime("%Y-%m-%d")
-                elif not travel_data["end_date"]:
-                    # 默认3天
-                    start_date_obj = datetime.strptime(travel_data["start_date"], "%Y-%m-%d")
-                    travel_data["end_date"] = (start_date_obj + timedelta(days=2)).strftime("%Y-%m-%d")
-                
-                # 计算天数
-                start_date_obj = datetime.strptime(travel_data["start_date"], "%Y-%m-%d")
-                end_date_obj = datetime.strptime(travel_data["end_date"], "%Y-%m-%d")
-                duration = (end_date_obj - start_date_obj).days + 1
-                if duration <= 0:
-                    raise ValueError("聊天解析出的日期无效：结束日期早于开始日期")
-                travel_data["duration"] = duration
-                
-                # 创建任务
+        reply = ""
+
+        if intent == "create_plan" and can_proceed:
+            # 创建计划
+            facts = updated_facts or session.accumulated_facts
+            travel_data = _facts_to_travel_request(facts)
+
+            task_id = str(uuid.uuid4())
+            planning_tasks[task_id] = {
+                "task_id": task_id,
+                "status": "started",
+                "progress": 0,
+                "current_agent": "旅小智",
+                "message": f"正在为您规划 {facts.get('destination', '')} 之旅...",
+                "created_at": datetime.now().isoformat(),
+                "request": travel_data,
+                "result": None,
+                "source": "chat",
+                "events": [],
+                "next_event_seq": 1,
+            }
+            append_task_event(task_id, "task_created", "任务已创建", progress=0, status="started", agent="system")
+            save_tasks_state()
+            background_tasks.add_task(run_planning_task, task_id, travel_data)
+
+            session.active_task_id = task_id
+            reply = _build_plan_created_reply(facts)
+            session.add_message("assistant", reply, {"intent": intent, "task_id": task_id})
+
+            api_logger.info(f"创建任务: {task_id} | dest={facts.get('destination')}")
+
+        elif intent == "modify_plan" and session.active_task_id:
+            # 修改已有计划
+            original_task = planning_tasks.get(session.active_task_id)
+            if original_task and original_task.get("result"):
                 task_id = str(uuid.uuid4())
-                planning_tasks[task_id] = {
-                    "task_id": task_id,
-                    "status": "started",
-                    "progress": 0,
-                    "current_agent": "旅小智",
-                    "message": f"旅小智正在为您规划{travel_data['destination']}之旅...",
-                    "created_at": datetime.now().isoformat(),
-                    "request": travel_data,
-                    "result": None,
-                    "source": "chat"  # 标记来源
-                }
-                
-                # 保存任务状态
-                save_tasks_state()
-                
-                # 添加后台任务
-                background_tasks.add_task(run_planning_task, task_id, travel_data)
-                
-                api_logger.info(f"自然语言创建任务成功: {task_id}")
-                
-            except Exception as e:
-                api_logger.error(f"自动创建任务失败: {str(e)}")
-                can_proceed = False
-        
-        # 生成友好的反馈
-        if can_proceed and task_id:
-            clarification_response = f"✅ 好的！旅小智已经理解您的需求，正在为您规划{extracted.get('destination', '')}之旅！\n\n📋 规划信息：\n"
-            if "destination" in extracted:
-                clarification_response += f"📍 目的地：{extracted['destination']}\n"
-            if "start_date" in extracted or "end_date" in extracted:
-                clarification_response += f"📅 时间：{extracted.get('start_date', '')} 至 {extracted.get('end_date', '')}\n"
-            if "duration" in extracted:
-                clarification_response += f"⏰ 天数：{extracted['duration']}天\n"
-            if "group_size" in extracted:
-                clarification_response += f"👥 人数：{extracted['group_size']}人\n"
-            if "budget_range" in extracted:
-                clarification_response += f"💰 预算：{extracted['budget_range']}\n"
-            if "interests" in extracted and extracted["interests"]:
-                clarification_response += f"🎯 兴趣：{', '.join(extracted['interests'])}\n"
-            
-            clarification_response += "\n🤖 AI智能体团队正在为您工作，请稍候..."
-        else:
-            if not has_destination:
-                clarification_response = "😊 您好！我是旅小智。请告诉我您想去哪里旅行？"
-            elif not has_time_info:
-                clarification_response = f"好的！您想去{extracted.get('destination', '')}旅行。\n\n请问您计划什么时候出发？大概玩几天呢？"
+                # 异步执行 refine
+                background_tasks.add_task(
+                    _run_refine_task,
+                    task_id,
+                    session.active_task_id,
+                    user_message,
+                    session,
+                )
+                reply = "正在根据您的意见调整计划，请稍候..."
+                session.add_message("assistant", reply, {"intent": intent, "task_id": task_id})
             else:
-                clarification_response = clarification_text or "我需要更多信息来为您规划完美的旅程。"
-            
-            if missing:
-                clarification_response += f"\n\n💡 还需要了解：{', '.join(missing)}"
-        
+                reply = "当前没有可修改的计划。请先创建一个旅行计划。"
+                session.add_message("assistant", reply, {"intent": "chat"})
+
+        elif intent == "provide_info":
+            # 补充信息
+            extracted = analysis.get("extracted", {})
+            session.merge_facts(extracted)
+
+            if can_proceed:
+                # 信息已齐全，提示可以创建
+                reply = _build_ready_reply(session.accumulated_facts)
+            else:
+                reply = analysis.get("clarification", "") or _build_clarify_reply(session.accumulated_facts, missing_fields)
+
+            session.add_message("assistant", reply, {"intent": intent, "extracted": extracted})
+
+        else:
+            # chat / 闲聊 / 降级
+            reply = analysis.get("direct_reply", "") or analysis.get("clarification", "") or _build_welcome_reply()
+            session.add_message("assistant", reply, {"intent": "chat"})
+
+        # ── 持久化 Session ──
+        SESSION_STORE.update_session(session)
+
         return ChatResponse(
-            understood=confidence > 0.5,
-            extracted_info=extracted,
-            missing_info=missing,
-            clarification=clarification_response,
+            session_id=session.session_id,
+            intent=intent,
+            message=reply,
+            task_id=task_id,
+            extracted_facts=session.accumulated_facts,
+            missing_fields=missing_fields,
             can_proceed=can_proceed,
-            task_id=task_id
         )
-        
+
     except Exception as e:
         api_logger.error(f"自然语言处理失败: {str(e)}")
         return ChatResponse(
-            understood=False,
-            extracted_info={},
-            missing_info=["所有信息"],
-            clarification="抱歉，旅小智遇到了一点小问题。能否请您重新描述一下您的旅行需求？",
-            can_proceed=False
+            session_id=request.session_id or "",
+            intent="chat",
+            message="抱歉，旅小智遇到了一点小问题。能否请您重新描述一下您的旅行需求？",
         )
+
+
+# ── 辅助函数 ──
+
+def _facts_to_travel_request(facts: Dict[str, Any]) -> Dict[str, Any]:
+    """将累积事实转换为 TravelRequest 格式。"""
+    start_date = facts.get("start_date", (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"))
+    end_date = facts.get("end_date", (datetime.now() + timedelta(days=9)).strftime("%Y-%m-%d"))
+    try:
+        sd = datetime.strptime(start_date, "%Y-%m-%d")
+        ed = datetime.strptime(end_date, "%Y-%m-%d")
+        duration = (ed - sd).days + 1
+        if duration <= 0:
+            duration = 3
+    except Exception:
+        duration = 3
+
+    return {
+        "departure": facts.get("departure", ""),
+        "destination": facts.get("destination", ""),
+        "start_date": start_date,
+        "end_date": end_date,
+        "duration": duration,
+        "budget_range": facts.get("budget_range", "中等预算"),
+        "group_size": int(facts.get("group_size", 2)),
+        "interests": facts.get("interests", []),
+        "accommodation_preference": facts.get("accommodation_preference", "酒店"),
+        "transportation_preference": facts.get("transportation_preference", "公共交通"),
+        "travel_dates": f"{start_date} 至 {end_date}",
+        "special_requirements": facts.get("special_requirements", ""),
+        "currency": "CNY",
+    }
+
+
+def _build_plan_created_reply(facts: Dict[str, Any]) -> str:
+    dest = facts.get("destination", "")
+    lines = [f"✦ 好的！正在为您规划 **{dest}** 之旅！\n"]
+    lines.append("📋 已确认的信息：")
+    if dest:
+        lines.append(f"  · 目的地：{dest}")
+    if facts.get("start_date"):
+        lines.append(f"  · 日期：{facts.get('start_date')} 至 {facts.get('end_date', '')}")
+    if facts.get("budget_range"):
+        lines.append(f"  · 预算：{facts.get('budget_range')}")
+    if facts.get("group_size"):
+        lines.append(f"  · 人数：{facts.get('group_size')} 人")
+    if facts.get("interests"):
+        lines.append(f"  · 兴趣：{'、'.join(facts.get('interests', []))}")
+    lines.append("\n6 个 AI Agent 正在并行协作，请稍候...")
+    return "\n".join(lines)
+
+
+def _build_ready_reply(facts: Dict[str, Any]) -> str:
+    dest = facts.get("destination", "")
+    lines = [f"信息已齐全！已为您准备好 **{dest}** 的旅行规划。\n"]
+    lines.append("📋 当前设置：")
+    for key, label in [
+        ("destination", "目的地"), ("start_date", "出发日期"), ("end_date", "返回日期"),
+        ("budget_range", "预算"), ("group_size", "人数"),
+    ]:
+        if facts.get(key):
+            lines.append(f"  · {label}：{facts.get(key)}")
+    if facts.get("interests"):
+        lines.append(f"  · 兴趣：{'、'.join(facts.get('interests', []))}")
+    lines.append("\n💡 回复「开始规划」即可生成方案，或继续补充需求。")
+    return "\n".join(lines)
+
+
+def _build_clarify_reply(facts: Dict[str, Any], missing: List[str]) -> str:
+    field_names = {
+        "destination": "目的地（想去哪个城市？）",
+        "start_date": "出发日期（什么时候出发？）",
+        "end_date": "返回日期（什么时候回来？）",
+    }
+    lines = []
+    if facts.get("destination"):
+        lines.append(f"好的，已记录您想去 **{facts.get('destination')}**。")
+    else:
+        lines.append("您好！我是旅小智，您的 AI 旅行规划助手。")
+
+    if missing:
+        questions = [field_names.get(f, f) for f in missing if f in field_names]
+        if questions:
+            lines.append("\n还需要以下信息：")
+            for q in questions:
+                lines.append(f"  · {q}")
+    return "\n".join(lines)
+
+
+def _build_welcome_reply() -> str:
+    return "您好！我是旅小智 ✦\n\n请告诉我您的旅行需求，比如：\n· 目的地和时间\n· 预算范围\n· 同行人数\n· 兴趣偏好"
+
+
+async def _run_refine_task(
+    new_task_id: str,
+    original_task_id: str,
+    feedback: str,
+    session,
+):
+    """后台执行增量重规划。"""
+    try:
+        original = planning_tasks.get(original_task_id)
+        if not original or not original.get("result"):
+            planning_tasks[new_task_id] = {
+                "task_id": new_task_id,
+                "status": "failed",
+                "progress": 100,
+                "message": "原始计划不可用",
+                "result": None,
+            }
+            return
+
+        # 初始化新任务
+        planning_tasks[new_task_id] = {
+            "task_id": new_task_id,
+            "status": "processing",
+            "progress": 10,
+            "current_agent": "supervisor",
+            "message": f"正在根据反馈调整计划: {feedback[:40]}...",
+            "created_at": datetime.now().isoformat(),
+            "request": original.get("request", {}),
+            "result": None,
+            "events": [],
+            "next_event_seq": 1,
+        }
+        append_task_event(new_task_id, "task_created", "增量重规划开始", progress=10, status="processing", agent="supervisor")
+
+        # 初始化 DeltaReplanner
+        planner = LangGraphTravelAgents()
+        llm_config = _build_llm_config() if config.OPENAI_API_KEY else None
+        replanner = DeltaReplanner(planner.agent_registry, llm=None)  # 先用规则降级
+        if llm_config:
+            try:
+                from langchain_openai import ChatOpenAI
+                replanner.llm = ChatOpenAI(**llm_config, temperature=0.1)
+            except Exception:
+                pass
+
+        # 执行增量重规划
+        new_result = replanner.refine(
+            original["result"],
+            feedback,
+            session=session,
+        )
+
+        planning_tasks[new_task_id]["status"] = "completed"
+        planning_tasks[new_task_id]["progress"] = 100
+        planning_tasks[new_task_id]["message"] = "计划已调整完成"
+        planning_tasks[new_task_id]["result"] = new_result
+
+        # 更新 session 的 active_task_id
+        session.active_task_id = new_task_id
+        SESSION_STORE.update_session(session)
+
+        append_task_event(new_task_id, "task_completed", "计划已调整完成", progress=100, status="completed", agent="supervisor")
+        save_tasks_state()
+
+        # 保存结果
+        await save_planning_result(new_task_id, new_result, original.get("request", {}))
+
+    except Exception as e:
+        api_logger.error(f"Refine 任务失败: {str(e)}")
+        planning_tasks[new_task_id] = {
+            "task_id": new_task_id,
+            "status": "failed",
+            "progress": 100,
+            "message": f"调整失败: {str(e)}",
+            "result": None,
+        }
+
+
+# ── 新增端点：/refine ──
+@app.post("/tasks/{task_id}/refine")
+async def refine_plan(task_id: str, request: RefineRequest, background_tasks: BackgroundTasks):
+    """对已有计划提出修改意见，增量重规划。"""
+    if task_id not in planning_tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = planning_tasks[task_id]
+    if not task.get("result"):
+        raise HTTPException(status_code=400, detail="任务尚未完成，无法修改")
+
+    # 获取或创建 session
+    session = None
+    if request.session_id:
+        session = SESSION_STORE.get_session(request.session_id)
+    if session is None:
+        session = SESSION_STORE.create_session()
+
+    session.add_message("user", request.feedback)
+
+    new_task_id = str(uuid.uuid4())
+    background_tasks.add_task(_run_refine_task, new_task_id, task_id, request.feedback, session)
+
+    return {
+        "task_id": new_task_id,
+        "original_task_id": task_id,
+        "status": "processing",
+        "message": "正在根据反馈调整计划",
+    }
+
+
+# ── 新增端点：/sessions ──
+@app.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    """获取会话信息（对话历史 + 累积事实）。"""
+    session = SESSION_STORE.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    return {
+        "session_id": session.session_id,
+        "messages": [m.to_dict() for m in session.messages],
+        "accumulated_facts": session.accumulated_facts,
+        "active_task_id": session.active_task_id,
+    }
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除会话。"""
+    SESSION_STORE.delete_session(session_id)
+    return {"status": "deleted", "session_id": session_id}
+
 
 # --------------------------- 独立运行入口 ---------------------------
 if __name__ == "__main__":
