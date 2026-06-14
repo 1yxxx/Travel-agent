@@ -7,6 +7,7 @@ import requests
 from apis.base import BaseProvider
 from core.retry import retry_api_call
 from core.cache import cache_api_call
+from backend.tools.weather_utils import normalize_forecast_days
 
 QWEATHER_BASE = "https://devapi.qweather.com/v7"
 
@@ -16,7 +17,8 @@ class QweatherProvider(BaseProvider):
 
     def search(self, params: dict) -> list[dict]:
         city = params.get("city", "")
-        days = params.get("days", 3)
+        requested_days = min(max(int(params.get("days", 3)), 1), 7)
+        endpoint_days = normalize_forecast_days(requested_days)
 
         def _fetch_city():
             """先通过城市名获取 Location ID。"""
@@ -35,7 +37,7 @@ class QweatherProvider(BaseProvider):
                 return [{"error": f"未找到城市: {city}"}]
 
             resp = requests.get(
-                f"{QWEATHER_BASE}/weather/{days}d",
+                f"{QWEATHER_BASE}/weather/{endpoint_days}d",
                 params={"key": self.api_key, "location": location_id},
                 timeout=10,
             )
@@ -54,6 +56,8 @@ class QweatherProvider(BaseProvider):
                 for d in daily
             ]
 
-        return retry_api_call(
-            lambda: cache_api_call("qweather", params, _fetch)
+        cache_params = {"city": city, "days": endpoint_days}
+        results = retry_api_call(
+            lambda: cache_api_call("qweather", cache_params, _fetch)
         )
+        return results[:requested_days]

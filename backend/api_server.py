@@ -176,6 +176,7 @@ def _analyze_agent_participation(result: Dict[str, Any]) -> Dict[str, Any]:
 
     participated: List[str] = []
     completed: List[str] = []
+    degraded: List[str] = []
     failed: List[str] = []
     not_participating: List[str] = []
 
@@ -192,8 +193,10 @@ def _analyze_agent_participation(result: Dict[str, Any]) -> Dict[str, Any]:
         participated.append(agent)
         if isinstance(value, dict):
             status = str(value.get("status", "")).strip().lower()
-            if status in {"completed", "degraded"}:
+            if status == "completed":
                 completed.append(agent)
+            elif status == "degraded":
+                degraded.append(agent)
             elif status in {"failed", "error", "timeout"}:
                 failed.append(agent)
             elif not status:
@@ -212,10 +215,12 @@ def _analyze_agent_participation(result: Dict[str, Any]) -> Dict[str, Any]:
         "expected_agents": expected_agents,
         "participated_agents": sorted(participated),
         "completed_agents": sorted(completed),
+        "degraded_agents": sorted(degraded),
         "failed_agents": sorted(failed),
         "not_participating_agents": sorted(not_participating),
         "extra_agents": extra_agents,
         "all_expected_participated": len(not_participating) == 0,
+        "all_expected_completed": not (degraded or failed or not_participating),
     }
 
 # --------------------------- 应用初始化与全局配置 ---------------------------
@@ -826,21 +831,31 @@ async def run_planning_task(task_id: str, travel_request: Dict[str, Any]):
                     set(result.get("missing_agents", []))
                     | set(participation.get("not_participating_agents", []))
                 )
+                merged_degraded_agents = sorted(
+                    set(result.get("degraded_agents", []))
+                    | set(participation.get("degraded_agents", []))
+                )
                 result["missing_agents"] = merged_missing_agents
-                if merged_missing_agents:
+                result["degraded_agents"] = merged_degraded_agents
+                if merged_missing_agents or merged_degraded_agents:
                     result["planning_complete"] = False
+                    result["completion_status"] = "partial"
                     api_logger.warning(
-                        f"任务 {task_id}: 部分智能体未参与 -> {merged_missing_agents}"
+                        "任务 %s: 规划不完整，缺失=%s，降级=%s",
+                        task_id,
+                        merged_missing_agents,
+                        merged_degraded_agents,
                     )
                     append_task_event(
                         task_id,
                         "agent_participation_warning",
-                        "部分智能体未参与，已记录缺失清单。",
+                        "部分智能体缺失或降级，已记录能力清单。",
                         progress=95,
                         status="processing",
                         agent="collector",
                         data={
                             "missing_agents": merged_missing_agents,
+                            "degraded_agents": merged_degraded_agents,
                             "failed_agents": participation.get("failed_agents", []),
                         },
                     )
@@ -848,15 +863,28 @@ async def run_planning_task(task_id: str, travel_request: Dict[str, Any]):
                 planning_tasks[task_id]["status"] = "completed"
                 planning_tasks[task_id]["progress"] = 100
                 planning_tasks[task_id]["current_agent"] = "summarizer"
-                planning_tasks[task_id]["message"] = "旅行规划完成！"
+                completion_message = (
+                    "旅行规划完整完成！"
+                    if result.get("planning_complete")
+                    else "旅行规划已生成，部分能力降级或信息待补充。"
+                )
+                planning_tasks[task_id]["message"] = completion_message
                 planning_tasks[task_id]["result"] = result
                 append_task_event(
                     task_id,
                     "task_completed",
-                    "旅行规划完成！",
+                    completion_message,
                     progress=100,
                     status="completed",
                     agent="summarizer",
+                    data={
+                        "completion_status": result.get(
+                            "completion_status",
+                            "complete" if result.get("planning_complete") else "partial",
+                        ),
+                        "missing_agents": merged_missing_agents,
+                        "degraded_agents": merged_degraded_agents,
+                    },
                 )
                 short_term_memory = result.get("short_term_memory")
                 if isinstance(short_term_memory, dict):

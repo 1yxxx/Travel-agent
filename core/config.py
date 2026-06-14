@@ -1,5 +1,5 @@
 """
-全局配置管理 —— Pydantic Settings，启动时校验所有必需字段。
+全局配置管理 —— Pydantic Settings，统一加载运行配置。
 
 替代后端各处 `os.getenv` 的分散写法。
 """
@@ -9,10 +9,10 @@ from pathlib import Path
 
 
 class Settings(BaseSettings):
-    """全局配置。所有必填字段缺失时在启动阶段即报错，而非运行时。"""
+    """全局配置。各能力在实际使用时校验所需密钥。"""
 
     # --- LLM ---
-    openai_api_key: str = Field(..., description="OpenAI 兼容 API Key")
+    openai_api_key: str = Field("", description="OpenAI 兼容 API Key")
     openai_base_url: str = Field("https://api.openai.com/v1", description="API 基础地址，可切 DeepSeek")
     openai_model: str = Field("gpt-4o-mini", description="默认模型名称")
     llm_temperature: float = Field(0.7, ge=0.0, le=2.0, description="LLM 采样温度")

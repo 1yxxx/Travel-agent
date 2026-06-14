@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from core.logging import logger
 from core.config import settings
 from apis.providers.tianxing import TianxingTrainProvider
+from backend.tools.result import ToolResult
 
 
 class TrainSearchInput(BaseModel):
@@ -16,22 +17,34 @@ class TrainSearchInput(BaseModel):
 
 
 @tool(args_schema=TrainSearchInput)
-def search_trains(departure: str, arrival: str, date: str) -> str:
+def search_trains(departure: str, arrival: str, date: str) -> ToolResult:
     """
     搜索国内高铁/动车信息。输入出发城市、到达城市和日期，返回车次列表。
     """
     if not settings.tianxing_api_key:
-        return f"[高铁查询] 天行数据 API Key 未配置"
+        return ToolResult.degraded(
+            "[高铁查询] 天行数据 API Key 未配置",
+            error="tianxing_api_key_missing",
+            source="tianxing",
+        )
 
     provider = TianxingTrainProvider(settings.tianxing_api_key)
     try:
         results = provider.search({"departure": departure, "arrival": arrival, "date": date})
     except Exception as e:
         logger.error("高铁查询失败 | {} → {} | {}", departure, arrival, str(e))
-        return f"[高铁查询暂时不可用] {departure} → {arrival}"
+        return ToolResult.degraded(
+            f"[高铁查询暂时不可用] {departure} → {arrival}",
+            error=str(e),
+            source="tianxing",
+        )
 
     if not results:
-        return f"未找到 {date} 从 {departure} 到 {arrival} 的高铁/动车"
+        return ToolResult.degraded(
+            f"未找到 {date} 从 {departure} 到 {arrival} 的高铁/动车",
+            error="no_train_results",
+            source="tianxing",
+        )
 
     lines = [f"**{departure} → {arrival} 高铁/动车 ({date})**"]
     for t in results[:5]:
@@ -40,4 +53,4 @@ def search_trains(departure: str, arrival: str, date: str) -> str:
             f"{t['dep_time']} → {t['arr_time']} | {t['duration']} | "
             f"二等座 ¥{t.get('price_td', 'N/A')}"
         )
-    return "\n".join(lines)
+    return ToolResult.success("\n".join(lines), data=results[:5], source="tianxing")

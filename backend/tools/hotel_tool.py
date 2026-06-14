@@ -7,6 +7,7 @@ from core.logging import logger
 from core.config import settings
 from apis.providers.amap import AmapHotelProvider
 from apis.providers.mock_price import MockPriceProvider
+from backend.tools.result import ToolResult
 
 
 class HotelSearchInput(BaseModel):
@@ -18,12 +19,16 @@ class HotelSearchInput(BaseModel):
 
 
 @tool(args_schema=HotelSearchInput)
-def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> str:
+def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> ToolResult:
     """
     搜索国内酒店。输入城市、日期和星级偏好，返回酒店列表（含参考价格）。
     """
     if not settings.amap_api_key:
-        return f"[酒店查询] 高德地图 API Key 未配置"
+        return ToolResult.degraded(
+            "[酒店查询] 高德地图 API Key 未配置",
+            error="amap_api_key_missing",
+            source="amap",
+        )
 
     amap = AmapHotelProvider(settings.amap_api_key)
     price_mock = MockPriceProvider()
@@ -32,10 +37,18 @@ def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> st
         hotels = amap.search({"city": city, "star": star})
     except Exception as e:
         logger.error("酒店查询失败 | city={} | {}", city, str(e))
-        return f"[酒店查询暂时不可用] {city}"
+        return ToolResult.degraded(
+            f"[酒店查询暂时不可用] {city}",
+            error=str(e),
+            source="amap",
+        )
 
     if not hotels:
-        return f"未找到 {city} 的酒店信息"
+        return ToolResult.degraded(
+            f"未找到 {city} 的酒店信息",
+            error="no_hotel_results",
+            source="amap",
+        )
 
     prices = price_mock.search({"city": city, "star": star})
 
@@ -49,4 +62,4 @@ def search_hotels(city: str, check_in: str, check_out: str, star: int = 4) -> st
             f"{h.get('address', '')[:20]}"
         )
     lines.append(f"\n*价格标注为参考价，实际以携程/飞猪为准*")
-    return "\n".join(lines)
+    return ToolResult.success("\n".join(lines), data=hotels[:5], source="amap")

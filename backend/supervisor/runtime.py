@@ -223,13 +223,17 @@ class SupervisorTravelPlanner:
         available = {
             name: result.get("response", "")
             for name, result in results.items()
-            if result.get("status") == "completed" and result.get("response")
+            if result.get("status") in {"completed", "degraded"} and result.get("response")
         }
         failed = [
-            name for name, result in results.items() if result.get("status") != "completed"
+            name
+            for name, result in results.items()
+            if result.get("status") not in {"completed", "degraded"}
         ]
         degraded = [
-            name for name, result in results.items() if result.get("degraded")
+            name
+            for name, result in results.items()
+            if result.get("status") == "degraded" or result.get("degraded")
         ]
         state["agent_results"] = results
         state["collector_output"] = {
@@ -304,8 +308,10 @@ class SupervisorTravelPlanner:
             warnings.append("失败 Agent：" + "、".join(collector["failed_agents"]))
         if collector.get("degraded_agents"):
             warnings.append("降级 Agent：" + "、".join(collector["degraded_agents"]))
+        passed = not warnings
         state["reflection_output"] = {
-            "passed": not collector.get("failed_agents"),
+            "passed": passed,
+            "completion_status": "complete" if passed else "partial",
             "warnings": warnings,
             "checked_at": datetime.now().isoformat(),
         }
@@ -363,8 +369,20 @@ class SupervisorTravelPlanner:
                 "stored_at": datetime.now().isoformat(),
             }
         )
-        state["task_status"] = "completed"
-        self._emit("task_completed", "Supervisor 多 Agent 规划完成。", 100, status="completed")
+        passed = bool(state.get("reflection_output", {}).get("passed"))
+        state["task_status"] = "completed" if passed else "partial"
+        message = (
+            "Supervisor 多 Agent 规划完整完成。"
+            if passed
+            else "Supervisor 多 Agent 规划已完成，部分能力降级或信息待补充。"
+        )
+        self._emit(
+            "task_completed",
+            message,
+            100,
+            status="completed",
+            data={"completion_status": "complete" if passed else "partial"},
+        )
         return state
 
     def _build_api_result(self, state: SupervisorState) -> Dict[str, Any]:
@@ -376,8 +394,22 @@ class SupervisorTravelPlanner:
         missing_agents = [
             name
             for name in expected_agents
-            if name not in agent_outputs or agent_outputs[name].get("status") != "completed"
+            if name not in agent_outputs
+            or agent_outputs[name].get("status") not in {"completed", "degraded"}
         ]
+        degraded_agents = [
+            name
+            for name in expected_agents
+            if name in agent_outputs
+            and (
+                agent_outputs[name].get("status") == "degraded"
+                or agent_outputs[name].get("degraded")
+            )
+        ]
+        planning_complete = not (
+            missing_agents or degraded_agents or state.get("missing_info")
+        )
+        completion_status = "complete" if planning_complete else "partial"
         contributions = {
             name: result.get("response", "") for name, result in agent_outputs.items()
         }
@@ -406,13 +438,16 @@ class SupervisorTravelPlanner:
                     "daily_itinerary": "参见行程规划师输出",
                 },
                 "missing_agents": missing_agents,
+                "degraded_agents": degraded_agents,
                 "final_plan": state.get("final_output", ""),
             },
             "agent_outputs": agent_outputs,
             "expected_agents": expected_agents,
             "selected_agents": state.get("selected_agents", []),
             "missing_agents": missing_agents,
-            "planning_complete": not missing_agents,
+            "degraded_agents": degraded_agents,
+            "planning_complete": planning_complete,
+            "completion_status": completion_status,
             "total_iterations": 1,
             "short_term_memory": {
                 "session_id": state.get("task_id"),

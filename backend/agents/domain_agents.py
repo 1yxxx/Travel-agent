@@ -8,6 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+try:
+    from backend.tools.result import ToolResult, normalize_tool_result
+except ImportError:
+    from tools.result import ToolResult, normalize_tool_result
+
 
 EventCallback = Optional[Callable[[Dict[str, Any]], None]]
 
@@ -40,27 +45,61 @@ class BaseDomainAgent:
         )
 
         try:
-            result = self.invoke_tool(params, facts)
-            text = str(result).strip() or self.fallback_output(facts, "工具返回为空")
+            tool_result = normalize_tool_result(self.invoke_tool(params, facts))
+            text = tool_result.message.strip()
+            if not text:
+                text = self.fallback_output(facts, tool_result.error or "工具返回为空")
+
+            agent_status = {
+                "success": "completed",
+                "degraded": "degraded",
+                "failed": "failed",
+            }[tool_result.status]
             artifact.update(
                 {
-                    "status": "completed",
+                    "status": agent_status,
                     "result_preview": text[:500],
+                    "result_data": tool_result.data,
+                    "source": tool_result.source,
+                    "error": tool_result.error,
                     "finished_at": datetime.now().isoformat(),
                 }
             )
+            event_type = {
+                "success": "tool_completed",
+                "degraded": "tool_degraded",
+                "failed": "tool_failed",
+            }[tool_result.status]
+            event_message = {
+                "success": f"{self.name} 工具调用完成",
+                "degraded": f"{self.name} 工具结果已降级",
+                "failed": f"{self.name} 工具调用失败",
+            }[tool_result.status]
             self._emit(
                 event_callback,
-                "tool_completed",
-                f"{self.name} 工具调用完成",
-                {"tool": artifact["tool"], "preview": text[:300]},
+                event_type,
+                event_message,
+                {
+                    "tool": artifact["tool"],
+                    "preview": text[:300],
+                    "status": tool_result.status,
+                    "error": tool_result.error,
+                },
             )
-            return self._result(subtask, text, [artifact], started_at)
+            return self._result(
+                subtask,
+                text,
+                [artifact],
+                started_at,
+                status=agent_status,
+                error=tool_result.error,
+                degraded=tool_result.status == "degraded",
+            )
         except Exception as exc:
             fallback = self.fallback_output(facts, str(exc))
             artifact.update(
                 {
-                    "status": "failed",
+                    "status": "degraded",
                     "error": str(exc),
                     "result_preview": fallback[:500],
                     "finished_at": datetime.now().isoformat(),
@@ -77,6 +116,7 @@ class BaseDomainAgent:
                 fallback,
                 [artifact],
                 started_at,
+                status="degraded",
                 error=str(exc),
                 degraded=True,
             )
@@ -113,11 +153,12 @@ class BaseDomainAgent:
         artifacts: List[Dict[str, Any]],
         started_at: str,
         *,
+        status: str = "completed",
         error: str = "",
         degraded: bool = False,
     ) -> Dict[str, Any]:
         return {
-            "status": "completed",
+            "status": status,
             "subtask": subtask,
             "response": output,
             "output": output,
@@ -265,27 +306,79 @@ class BudgetAgent(BaseDomainAgent):
             "group_size": facts.get("group_size", 1),
         }
 
-    def invoke_tool(self, params: Dict[str, Any], facts: Dict[str, Any]) -> str:
+    def invoke_tool(self, params: Dict[str, Any], facts: Dict[str, Any]) -> ToolResult:
         budget_text = str(params["budget_range"])
-        numbers = [int(item) for item in re.findall(r"\d+", budget_text)]
-        total_budget = max(numbers) if numbers else 0
-        duration = int(params["duration"])
-        group_size = int(params["group_size"])
-        if total_budget:
-            per_person_day = total_budget / max(duration * group_size, 1)
-            level = "偏紧" if per_person_day < 350 else "充足" if per_person_day >= 900 else "适中"
-            return (
-                "## 预算分析\n"
-                f"- 总预算参考：¥{total_budget}\n"
-                f"- 人均每日预算：约 ¥{per_person_day:.0f}\n"
-                f"- 预算状态：{level}\n"
-                "- 建议分配：住宿 35%，交通 25%，餐饮 20%，门票活动 15%，机动 5%。"
-            )
-        return (
-            "## 预算分析\n"
-            f"- 当前预算描述：{budget_text or '未提供明确金额'}\n"
-            "- 建议补充总预算金额；暂按住宿 35%、交通 25%、餐饮 20%、门票活动 15%、机动 5% 分配。"
+        estimate = parse_budget_estimate(
+            budget_text,
+            duration=int(params["duration"]),
+            group_size=int(params["group_size"]),
         )
+        total_budget = estimate["total_budget"]
+        if total_budget:
+            per_person_day = estimate["per_person_day"]
+            level = "偏紧" if per_person_day < 350 else "充足" if per_person_day >= 900 else "适中"
+            return ToolResult.success(
+                (
+                    "## 预算分析\n"
+                    f"- 预算口径：{estimate['basis']}\n"
+                    f"- 全程总预算参考：¥{total_budget:.0f}\n"
+                    f"- 人均每日预算：约 ¥{per_person_day:.0f}\n"
+                    f"- 预算状态：{level}\n"
+                    "- 建议分配：住宿 35%，交通 25%，餐饮 20%，门票活动 15%，机动 5%。"
+                ),
+                data=estimate,
+                source="budget_calculator",
+            )
+        return ToolResult.degraded(
+            (
+                "## 预算分析\n"
+                f"- 当前预算描述：{budget_text or '未提供明确金额'}\n"
+                "- 建议补充总预算金额；暂按住宿 35%、交通 25%、餐饮 20%、门票活动 15%、机动 5% 分配。"
+            ),
+            error="budget_amount_missing",
+            source="budget_calculator",
+        )
+
+
+def parse_budget_estimate(
+    budget_text: str,
+    *,
+    duration: int,
+    group_size: int,
+) -> Dict[str, Any]:
+    """Convert common Chinese budget descriptions into one trip-wide amount."""
+
+    normalized_duration = max(int(duration), 1)
+    normalized_group_size = max(int(group_size), 1)
+    numbers = [
+        int(item.replace(",", ""))
+        for item in re.findall(r"\d[\d,]*", str(budget_text))
+    ]
+    amount = max(numbers) if numbers else 0
+    is_daily = bool(
+        re.search(r"(?:每天|每日|日均|(?:元|块)?\s*/\s*(?:天|日))", budget_text)
+    )
+    is_per_person = bool(re.search(r"(?:人均|每人)", budget_text))
+
+    if is_daily and is_per_person:
+        total_budget = amount * normalized_duration * normalized_group_size
+        basis = "人均每日预算上限"
+    elif is_daily:
+        total_budget = amount * normalized_duration
+        basis = "团队每日预算上限"
+    else:
+        total_budget = amount
+        basis = "全程总预算上限"
+
+    per_person_day = total_budget / (normalized_duration * normalized_group_size)
+    return {
+        "input": budget_text,
+        "basis": basis,
+        "total_budget": total_budget,
+        "per_person_day": per_person_day,
+        "duration": normalized_duration,
+        "group_size": normalized_group_size,
+    }
 
 
 def build_default_agent_registry() -> Dict[str, BaseDomainAgent]:

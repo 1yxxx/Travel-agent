@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 
 EventCallback = Optional[Callable[[Dict[str, Any]], None]]
+AgentStatus = Literal["completed", "degraded", "failed"]
 
 
 class AgentExecution(TypedDict, total=False):
-    status: str
+    status: AgentStatus
     subtask: str
     response: str
     output: str

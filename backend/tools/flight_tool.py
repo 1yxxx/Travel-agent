@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from core.logging import logger
 from core.config import settings
 from apis.providers.tianxing import TianxingFlightProvider
+from backend.tools.result import ToolResult
 
 
 class FlightSearchInput(BaseModel):
@@ -18,23 +19,35 @@ class FlightSearchInput(BaseModel):
 
 
 @tool(args_schema=FlightSearchInput)
-def search_flights(departure: str, arrival: str, date: str) -> str:
+def search_flights(departure: str, arrival: str, date: str) -> ToolResult:
     """
     搜索国内航班信息。输入出发城市、到达城市和日期，返回航班列表。
     如果没有 API Key 或查询无结果，返回友好提示。
     """
     if not settings.tianxing_api_key:
-        return f"[航班查询] 天行数据 API Key 未配置，无法查询 {departure} → {arrival} 的航班"
+        return ToolResult.degraded(
+            f"[航班查询] 天行数据 API Key 未配置，无法查询 {departure} → {arrival} 的航班",
+            error="tianxing_api_key_missing",
+            source="tianxing",
+        )
 
     provider = TianxingFlightProvider(settings.tianxing_api_key)
     try:
         results = provider.search({"departure": departure, "arrival": arrival, "date": date})
     except Exception as e:
         logger.error("航班查询失败 | {} → {} | {}", departure, arrival, str(e))
-        return f"[航班查询暂时不可用] {departure} → {arrival}: 请稍后重试"
+        return ToolResult.degraded(
+            f"[航班查询暂时不可用] {departure} → {arrival}: 请稍后重试",
+            error=str(e),
+            source="tianxing",
+        )
 
     if not results:
-        return f"未找到 {date} 从 {departure} 到 {arrival} 的航班"
+        return ToolResult.degraded(
+            f"未找到 {date} 从 {departure} 到 {arrival} 的航班",
+            error="no_flight_results",
+            source="tianxing",
+        )
 
     lines = [f"**{departure} → {arrival} 航班 ({date})**"]
     for f in results[:5]:
@@ -43,4 +56,4 @@ def search_flights(departure: str, arrival: str, date: str) -> str:
             f"{f['dep_time']} → {f['arr_time']} | "
             f"¥{f.get('price', 'N/A')}"
         )
-    return "\n".join(lines)
+    return ToolResult.success("\n".join(lines), data=results[:5], source="tianxing")
